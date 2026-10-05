@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard, FileText, Bot, Sparkles, Database, Globe, Image,
   BarChart3, Calendar, Settings, ChevronRight, Search, Bell,
@@ -122,11 +122,11 @@ function WorkflowBreadcrumb({ activeIndex, onBack }: { activeIndex: number; onBa
   );
 }
 
-function SEOScoreCircle({ score }: { score: number }) {
-  const color = score >= 80 ? "#34d399" : score >= 60 ? "#fbbf24" : "#f87171";
+function SEOScoreCircle({ score }: { score: number | null }) {
+  const color = score === null ? "#64748b" : score >= 80 ? "#34d399" : score >= 60 ? "#fbbf24" : "#f87171";
   const r = 32;
   const circ = 2 * Math.PI * r;
-  const dash = (score / 100) * circ;
+  const dash = score === null ? 0 : (score / 100) * circ;
   return (
     <div className="relative inline-flex items-center justify-center" style={{ padding: "6px" }}>
       <svg width={88} height={88} viewBox="0 0 88 88" overflow="visible" style={{ transform: "rotate(-90deg)" }}>
@@ -136,7 +136,7 @@ function SEOScoreCircle({ score }: { score: number }) {
           style={{ filter: `drop-shadow(0 0 7px ${color})` }} />
       </svg>
       <div className="absolute text-center">
-        <div className="text-lg font-bold font-mono" style={{ color, textShadow: `0 0 12px ${color}60` }}>{score}</div>
+        <div className="text-lg font-bold font-mono" style={{ color, textShadow: `0 0 12px ${color}60` }}>{score ?? "—"}</div>
         <div className="text-[9px] text-slate-400 font-mono">SEO</div>
       </div>
     </div>
@@ -659,19 +659,66 @@ function DashboardScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 }
 
 // ─── Liste des articles ─────────────────────────────────────────────────────────
-function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
-  const articles = [
-    { id: 1, title: "SEO pour startups : stratégie complète de génération de leads organiques", seo: 96, status: "published", views: "12.4K", date: "22 Mai", lastEdited: "22 Mai 14:30", category: "SEO", keywords: 8, thumbnail: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=400" },
-    { id: 2, title: "Growth Marketing : 7 leviers d'acquisition pour PME en 2025", seo: 88, status: "published", views: "8.7K", date: "18 Mai", lastEdited: "18 Mai 09:15", category: "Growth", keywords: 6, thumbnail: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400" },
-    { id: 3, title: "Content Marketing B2B : générer des leads qualifiés avec le SEO", seo: 82, status: "draft", views: "—", date: "25 Mai", lastEdited: "26 Mai 16:42", category: "Content", keywords: 5, thumbnail: "https://images.unsplash.com/photo-1553877522-43269d4ea984?w=400" },
-    { id: 4, title: "Financement startup : guide complet des options en France", seo: 91, status: "review", views: "—", date: "24 Mai", lastEdited: "25 Mai 11:20", category: "Finance", keywords: 7, thumbnail: "https://images.unsplash.com/photo-1559526324-4b87b5e36e44?w=400" },
-    { id: 5, title: "Product-Market Fit : méthodologie complète pour entrepreneurs", seo: 79, status: "published", views: "5.2K", date: "12 Mai", lastEdited: "12 Mai 08:00", category: "Product", keywords: 4, thumbnail: "https://images.unsplash.com/photo-1556761175-b413da4baf72?w=400" },
-    { id: 6, title: "Stratégie digitale pour TPE : roadmap en 90 jours", seo: 85, status: "published", views: "6.8K", date: "8 Mai", lastEdited: "8 Mai 15:30", category: "Stratégie", keywords: 6, thumbnail: "https://images.unsplash.com/photo-1557804506-669a67965ba0?w=400" },
-    { id: 7, title: "Inbound Marketing : attirer des clients qualifiés sans publicité", seo: 73, status: "scheduled", views: "—", date: "30 Mai", lastEdited: "26 Mai 10:05", category: "Marketing", keywords: 5, thumbnail: "https://images.unsplash.com/photo-1552664730-d307ca884978?w=400" },
-    { id: 8, title: "LinkedIn B2B : stratégie de prospection pour startups", seo: 68, status: "draft", views: "—", date: "—", lastEdited: "25 Mai 17:58", category: "Social", keywords: 3, thumbnail: null },
-  ];
+type ArticleStatus = "published" | "draft" | "review" | "scheduled";
 
-  const filterLabels: Record<string, string> = {
+interface Article {
+  id: string;
+  title: string | null;
+  seo_score: number | null;
+  status: ArticleStatus;
+  main_keyword: string | null;
+  secondary_keywords: string[] | null;
+  created_at: string;
+  updated_at: string;
+  featured_image_url: string | null;
+  thumbnail_url: string | null;
+}
+
+function formatArticleDate(value: string | null | undefined): string {
+  if (!value) return "Date indisponible";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date indisponible";
+
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | ArticleStatus>("all");
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadArticles() {
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await fetch("http://localhost:3001/api/articles", { signal: controller.signal });
+        if (!response.ok) throw new Error("Impossible de charger les articles depuis le serveur.");
+
+        const data: unknown = await response.json();
+        if (!Array.isArray(data)) throw new Error("La réponse du serveur est invalide.");
+
+        setArticles(data as Article[]);
+      } catch (requestError) {
+        if (requestError instanceof Error && requestError.name === "AbortError") return;
+        setError(requestError instanceof Error ? requestError.message : "Une erreur est survenue pendant le chargement.");
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }
+
+    void loadArticles();
+    return () => controller.abort();
+  }, []);
+  const filterLabels: Record<"all" | ArticleStatus, string> = {
     all: "Tous les articles",
     published: "Publiés",
     draft: "Brouillons",
@@ -679,17 +726,17 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
     scheduled: "Planifiés",
   };
 
-  const [filter, setFilter] = useState("all");
   const filtered = filter === "all" ? articles : articles.filter(a => a.status === filter);
+  const filters: Array<"all" | ArticleStatus> = ["all", "published", "review", "draft", "scheduled"];
 
   return (
     <div className="p-6 space-y-5 overflow-y-auto h-full">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex gap-2 flex-wrap">
-          {["all", "published", "review", "draft", "scheduled"].map(f => (
+          {filters.map(f => (
             <button key={f} onClick={() => setFilter(f)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f ? "bg-purple-600 text-white shadow-lg shadow-purple-500/20" : "bg-[#0b1028] border border-purple-500/15 text-slate-500 hover:text-slate-300"}`}>
-              {filterLabels[f]} {filter === f && `(${filtered.length})`}
+              {filterLabels[f]} {filter === f && !loading && !error && `(${filtered.length})`}
             </button>
           ))}
         </div>
@@ -700,13 +747,21 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
       </div>
 
       <div className="space-y-2.5">
-        {filtered.map(a => (
+        {loading ? (
+          <p className="py-8 text-center text-sm text-slate-400">Chargement des articles...</p>
+        ) : error ? (
+          <p className="py-8 text-center text-sm text-rose-300">{error}</p>
+        ) : filtered.length === 0 ? (
+          <p className="py-8 text-center text-sm text-slate-400">
+            {articles.length === 0 ? "Aucun article pour le moment." : "Aucun article pour ce filtre."}
+          </p>
+        ) : filtered.map(a => (
           <GlassCard key={a.id} className="p-4 hover:border-purple-500/35 transition-all group" glow>
             <div className="flex items-center gap-4">
               {/* Thumbnail */}
               <div className="w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden bg-[#070d22] border border-purple-500/10">
-                {a.thumbnail ? (
-                  <img src={a.thumbnail} alt={a.title} className="w-full h-full object-cover" />
+                {(a.thumbnail_url || a.featured_image_url) ? (
+                  <img src={a.thumbnail_url || a.featured_image_url || undefined} alt={a.title || ""} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
                     <FileText size={20} className="text-slate-600" />
@@ -715,24 +770,22 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
               </div>
 
               {/* SEO Score */}
-              <SEOScoreCircle score={a.seo} />
+              <SEOScoreCircle score={a.seo_score} />
 
               {/* Content */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap mb-1">
-                  <h3 className="text-sm font-medium text-slate-200 group-hover:text-white transition-colors truncate">{a.title}</h3>
+                  <h3 className="text-sm font-medium text-slate-200 group-hover:text-white transition-colors truncate">{a.title || "Article sans titre"}</h3>
                   <NeonBadge color={
                     a.status === "published" ? "green" :
                     a.status === "review" ? "cyan" :
                     a.status === "scheduled" ? "pink" :
                     "purple"
                   }>{STATUS_FR[a.status]}</NeonBadge>
-                  <NeonBadge color="purple">{a.category}</NeonBadge>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-slate-500 font-mono flex-wrap">
-                  <span className="flex items-center gap-1"><Clock size={10} /> Modifié {a.lastEdited}</span>
-                  <span className="flex items-center gap-1"><Hash size={10} /> {a.keywords} keywords</span>
-                  {a.views !== "—" && <span className="flex items-center gap-1"><Eye size={10} /> {a.views} vues</span>}
+                  <span className="flex items-center gap-1"><Clock size={10} /> Modifié {formatArticleDate(a.updated_at || a.created_at)}</span>
+                  <span className="flex items-center gap-1"><Hash size={10} /> {a.main_keyword || "Mot-clé non renseigné"}</span>
                 </div>
               </div>
 
@@ -773,7 +826,7 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
                     <button
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-pink-600/20 border border-pink-500/30 text-pink-300 text-xs hover:bg-pink-600/30 transition-colors"
                     >
-                      <Calendar size={11} /> Planifié le {a.date}
+                      <Calendar size={11} /> Planifié
                     </button>
                   </>
                 )}

@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import articlesRouter from "./routes/articles.ts";
+import generateArticleRouter from "./routes/generateArticle.ts";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env", import.meta.url)) });
 
@@ -17,6 +18,7 @@ app.use(
 );
 
 app.use("/api/articles", articlesRouter);
+app.use("/api/generate-article", generateArticleRouter);
 
 app.get("/api/health", (_request, response) => {
   response.json({

@@ -1,4 +1,4 @@
-import { useState, useRef, DragEvent } from "react";
+import { useEffect, useState, useRef, DragEvent } from "react";
 import {
   Image as ImageIcon,
   Upload,
@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   Sparkles,
 } from "lucide-react";
+import { contentToSections } from "../utils/articleContent";
 
 type MediaSource = "upload" | "wordpress" | "unsplash";
 
@@ -82,6 +83,7 @@ const MOCK_WORDPRESS_MEDIA: MediaItem[] = [
 ];
 
 interface VisualEnrichmentProps {
+  articleId: string | null;
   sections: Section[];
   title: string;
   onBack: () => void;
@@ -89,7 +91,10 @@ interface VisualEnrichmentProps {
   onPublish: () => void;
 }
 
-export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }: VisualEnrichmentProps) {
+export function VisualEnrichment({ articleId, sections, title, onBack, onNext, onPublish }: VisualEnrichmentProps) {
+  const [loadedArticle, setLoadedArticle] = useState<{ title: string; content: string } | null>(null);
+  const [articleLoading, setArticleLoading] = useState(Boolean(articleId));
+  const [articleError, setArticleError] = useState<string | null>(null);
   const [articleImages, setArticleImages] = useState<ArticleImage[]>([]);
   const [mediaLibrary, setMediaLibrary] = useState<MediaItem[]>(MOCK_WORDPRESS_MEDIA);
   const [activeTab, setActiveTab] = useState<"edit" | "preview">("edit");
@@ -103,6 +108,35 @@ export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }:
   const [dragActive, setDragActive] = useState(false);
   const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
   const [showValidationModal, setShowValidationModal] = useState(false);
+
+  useEffect(() => {
+    if (!articleId) {
+      setLoadedArticle(null);
+      setArticleError(null);
+      setArticleLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setArticleLoading(true);
+    setArticleError(null);
+    void fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error(response.status === 404 ? "Cet article n'existe plus." : "Impossible de charger l'article.");
+        const article = await response.json() as { title: string | null; content: string | null };
+        setLoadedArticle({ title: article.title || "Article sans titre", content: article.content || "" });
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setArticleError(error instanceof Error ? error.message : "Erreur pendant le chargement de l'article.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setArticleLoading(false); });
+    return () => controller.abort();
+  }, [articleId]);
+
+  const displayedTitle = articleId ? loadedArticle?.title || "Chargement de l'article..." : title;
+  const displayedSections = articleId
+    ? loadedArticle ? contentToSections(loadedArticle.content) : []
+    : sections;
 
   const featuredImage = articleImages.find((img) => img.position === "featured");
   const thumbnailImage = articleImages.find((img) => img.position === "thumbnail");
@@ -332,6 +366,8 @@ export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }:
         </div>
       </div>
 
+      {articleError && <p className="px-5 py-2 text-sm text-rose-300">{articleError}</p>}
+      {articleLoading && <p className="px-5 py-2 text-sm text-slate-400">Chargement de l'article...</p>}
       <div className="flex-1 flex overflow-hidden">
         {activeTab === "edit" ? (
           <>
@@ -371,7 +407,7 @@ export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }:
                   </div>
 
                   <div className="space-y-3">
-                    {sections.map((section, index) => {
+                    {displayedSections.map((section, index) => {
                       const image = articleImages.find((img) => img.position === index);
                       const media = image ? getMediaById(image.mediaId) : undefined;
 
@@ -529,7 +565,7 @@ export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }:
                 className="text-4xl font-bold text-white mb-6 leading-tight"
                 style={{ fontFamily: "'Orbitron', sans-serif" }}
               >
-                {title}
+                {displayedTitle}
               </h1>
 
               {/* Meta */}
@@ -543,7 +579,7 @@ export function VisualEnrichment({ sections, title, onBack, onNext, onPublish }:
 
               {/* Content with images */}
               <div className="space-y-6">
-                {sections.map((section, index) => {
+                {displayedSections.map((section, index) => {
                   const image = articleImages.find((img) => img.position === index);
                   const media = image ? getMediaById(image.mediaId) : undefined;
 

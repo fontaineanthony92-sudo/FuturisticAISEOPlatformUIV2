@@ -15,6 +15,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from "recharts";
 import { VisualEnrichment } from "./components/VisualEnrichment";
+import { ArticleSection, contentToSections, sectionsToContent } from "./utils/articleContent";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Screen = "landing" | "auth" | "dashboard" | "articles" | "assistant" |
@@ -687,7 +688,7 @@ function formatArticleDate(value: string | null | undefined): string {
   }).format(date);
 }
 
-function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+function ArticlesScreen({ onNavigate, onSelectArticle }: { onNavigate: (s: Screen) => void; onSelectArticle: (id: string, screen: Screen) => void }) {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -793,7 +794,7 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
               <div className="flex items-center gap-2 flex-shrink-0">
                 {a.status === "draft" && (
                   <button
-                    onClick={() => onNavigate("editor")}
+                    onClick={() => onSelectArticle(a.id, "editor")}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-500 transition-all"
                   >
                     <PenTool size={11} /> Continuer la rédaction
@@ -802,13 +803,13 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
                 {a.status === "review" && (
                   <>
                     <button
-                      onClick={() => onNavigate("editor")}
+                      onClick={() => onSelectArticle(a.id, "editor")}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0b1028] border border-purple-500/15 text-slate-400 hover:text-white text-xs transition-all"
                     >
                       <PenTool size={11} /> Modifier
                     </button>
                     <button
-                      onClick={() => onNavigate("wordpress")}
+                      onClick={() => onSelectArticle(a.id, "wordpress")}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-xs font-medium hover:scale-105 transition-transform shadow-lg shadow-cyan-500/20"
                     >
                       <CheckCircle size={11} /> Valider et publier
@@ -818,7 +819,7 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
                 {a.status === "scheduled" && (
                   <>
                     <button
-                      onClick={() => onNavigate("editor")}
+                      onClick={() => onSelectArticle(a.id, "editor")}
                       className="p-2 rounded-lg bg-[#0b1028] border border-purple-500/15 text-slate-400 hover:text-white transition-colors"
                     >
                       <PenTool size={13} />
@@ -833,7 +834,7 @@ function ArticlesScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
                 {a.status === "published" && (
                   <>
                     <button
-                      onClick={() => onNavigate("editor")}
+                      onClick={() => onSelectArticle(a.id, "editor")}
                       className="p-2 rounded-lg bg-[#0b1028] border border-purple-500/15 text-slate-400 hover:text-white transition-colors opacity-0 group-hover:opacity-100"
                     >
                       <PenTool size={13} />
@@ -984,10 +985,24 @@ function AssistantScreen() {
 }
 
 // ─── Génération d'article ───────────────────────────────────────────────────────
-function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
+function GenerateScreen({ onNavigate, onGeneratedArticle }: { onNavigate?: (s: Screen) => void; onGeneratedArticle?: (id: string) => void }) {
+  const [subject, setSubject] = useState("Stratégie SEO complète pour startups et PME");
+  const [mainKeyword, setMainKeyword] = useState("SEO startup");
+  const [audience, setAudience] = useState("Fondateurs de startup");
+  const [length, setLength] = useState("Long");
   const [tone, setTone] = useState("professionnel");
+  const [includeFaq, setIncludeFaq] = useState(true);
+  const [generateMetaDescription, setGenerateMetaDescription] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generatedArticle, setGeneratedArticle] = useState<{
+    id: string;
+    title: string;
+    metaDescription: string;
+    content: string;
+    faq: Array<{ question: string; answer: string }>;
+  } | null>(null);
   const [promptModify, setPromptModify] = useState("");
   const [applyingPrompt, setApplyingPrompt] = useState(false);
 
@@ -998,11 +1013,63 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
     { key: "conversationnel", label: "Conversationnel" },
   ];
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
+    if (!subject.trim() || !mainKeyword.trim()) {
+      setGenerationError("Renseignez le sujet et le keyword principal.");
+      return;
+    }
+
     setGenerating(true);
-    setTimeout(() => { setGenerating(false); setGenerated(true); }, 2000);
+    setGenerationError(null);
+    setGenerated(false);
+    setGeneratedArticle(null);
+
+    try {
+      const response = await fetch("http://localhost:3001/api/generate-article", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject,
+          mainKeyword,
+          secondaryKeywords: [],
+          audience,
+          tone,
+          length,
+          includeFaq,
+          generateMetaDescription,
+        }),
+      });
+
+      const result = await response.json() as {
+        error?: string;
+        id?: string;
+        article?: {
+          title: string;
+          metaDescription: string;
+          content: string;
+          faq: Array<{ question: string; answer: string }>;
+        };
+      };
+
+      if (!response.ok) throw new Error(result.error || "La génération de l’article a échoué.");
+      if (!result.id || !result.article) throw new Error("Le serveur a retourné une réponse incomplète.");
+
+      onGeneratedArticle?.(result.id);
+      setGeneratedArticle({ id: result.id, ...result.article });
+      setGenerated(true);
+    } catch (requestError) {
+      setGenerationError(requestError instanceof Error
+        ? requestError.message
+        : "Le backend est inaccessible. Vérifiez qu’il est démarré puis réessayez.");
+    } finally {
+      setGenerating(false);
+    }
   };
-  const handleOpenEditor = () => { if (onNavigate) onNavigate("editor"); };
+  const handleOpenEditor = () => {
+    if (!generatedArticle || !onNavigate) return;
+    onGeneratedArticle?.(generatedArticle.id);
+    onNavigate("editor");
+  };
   const handleApplyPrompt = () => {
     if (!promptModify.trim()) return;
     setApplyingPrompt(true);
@@ -1019,24 +1086,19 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
 
           <div>
             <label className="block text-xs text-slate-400 font-mono mb-1.5">Sujet de l'article</label>
-            <input type="text" defaultValue="Stratégie SEO complète pour startups et PME"
+            <input type="text" value={subject} onChange={e => setSubject(e.target.value)}
               className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:border-purple-500/50 focus:outline-none transition-all" />
           </div>
 
           <div>
             <label className="block text-xs text-slate-400 font-mono mb-1.5">Keyword principal</label>
-            <input type="text" defaultValue="SEO startup"
+            <input type="text" value={mainKeyword} onChange={e => setMainKeyword(e.target.value)}
               className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:border-purple-500/50 focus:outline-none transition-all" />
           </div>
 
           <div>
             <label className="block text-xs text-slate-400 font-mono mb-1.5">Audience cible</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:outline-none">
-              <option>Fondateurs de startup</option>
-              <option>Dirigeants PME</option>
-              <option>Responsables marketing</option>
-              <option>Entrepreneurs</option>
-            </select>
+            <input type="text" value={audience} onChange={e => setAudience(e.target.value)} placeholder="Ex. Dirigeants de PME, étudiants, responsables RH, grand public..." className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:outline-none" />
           </div>
 
           <div>
@@ -1053,23 +1115,23 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
 
           <div>
             <label className="block text-xs text-slate-400 font-mono mb-1.5">Longueur de l'article</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:outline-none">
-              <option>Long format (2 400+ mots)</option>
-              <option>Standard (1 200–1 800 mots)</option>
-              <option>Court (600–1 000 mots)</option>
+            <select value={length} onChange={e => setLength(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:outline-none">
+              <option value="Long">Long format (2 400+ mots)</option>
+              <option value="Standard">Standard (1 200–1 800 mots)</option>
+              <option value="Court">Court (600–1 000 mots)</option>
             </select>
           </div>
 
           <div className="flex items-center gap-2">
-            <input type="checkbox" id="faq" defaultChecked className="accent-purple-500" />
+            <input type="checkbox" id="faq" checked={includeFaq} onChange={e => setIncludeFaq(e.target.checked)} className="accent-purple-500" />
             <label htmlFor="faq" className="text-xs text-slate-400">Inclure une section FAQ</label>
           </div>
           <div className="flex items-center gap-2">
-            <input type="checkbox" id="meta" defaultChecked className="accent-purple-500" />
+            <input type="checkbox" id="meta" checked={generateMetaDescription} onChange={e => setGenerateMetaDescription(e.target.checked)} className="accent-purple-500" />
             <label htmlFor="meta" className="text-xs text-slate-400">Générer automatiquement la meta description</label>
           </div>
 
-          <button onClick={handleGenerate} disabled={generating}
+          <button onClick={handleGenerate} disabled={generating || !subject.trim() || !mainKeyword.trim()}
             className="w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 hover:from-purple-500 hover:to-violet-500 text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 transition-all hover:scale-[1.02] disabled:opacity-60">
             {generating ? <><RefreshCw size={14} className="animate-spin" /> Génération en cours...</> : <><Sparkles size={14} /> Générer l'article</>}
           </button>
@@ -1081,7 +1143,7 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
             <h3 className="text-sm font-semibold text-white flex items-center gap-2"><FileText size={14} className="text-cyan-400" /> Aperçu de l'article</h3>
             {generated && (
               <div className="flex items-center gap-2">
-                <SEOScoreCircle score={94} />
+                <SEOScoreCircle score={null} />
                 <button className="p-1.5 rounded-lg bg-[#070d22] border border-purple-500/15 text-slate-400 hover:text-white transition-colors"><Download size={12} /></button>
                 <button onClick={handleOpenEditor}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-violet-600 text-white text-xs font-semibold shadow-lg shadow-purple-500/20 hover:scale-[1.02] transition-transform">
@@ -1090,6 +1152,8 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
               </div>
             )}
           </div>
+
+          {generationError && <p className="mb-3 text-xs text-rose-300" role="alert">{generationError}</p>}
 
           {!generated ? (
             <div className="flex-1 flex items-center justify-center">
@@ -1102,48 +1166,48 @@ function GenerateScreen({ onNavigate }: { onNavigate?: (s: Screen) => void }) {
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto space-y-4 text-sm">
-              <div className="p-3 rounded-xl bg-[#070d22] border border-purple-500/15">
-                <div className="text-[10px] text-slate-500 font-mono mb-1 uppercase">Meta Description</div>
-                <p className="text-slate-300 text-xs">Découvrez comment mettre en place une stratégie SEO complète pour votre startup en 2025. Guide pratique avec roadmap 90 jours, sélection de mots-clés et techniques de génération de leads organiques pour entrepreneurs et PME.</p>
-              </div>
-
-              <div className="space-y-3">
-                <h1 className="text-xl font-bold text-white leading-tight">SEO pour startups : stratégie complète de génération de leads organiques (2025)</h1>
-                <div className="flex gap-2 flex-wrap">
-                  {["SEO startup", "génération leads", "growth marketing", "acquisition client"].map(kw => (
-                    <span key={kw} className="px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/25 text-purple-300 text-[10px] font-mono">{kw}</span>
-                  ))}
-                </div>
-
-                <div className="prose prose-sm prose-invert max-w-none">
-                  <p className="text-slate-400 leading-relaxed text-xs">Dans un écosystème digital où la visibilité organique détermine directement le succès commercial, les startups et PME font face à un défi crucial : comment générer un flux constant de leads qualifiés sans épuiser leur budget marketing ?</p>
-
-                  {[
-                    { h: "H2 : Pourquoi le SEO est essentiel pour les startups en 2025", p: "Contrairement aux canaux publicitaires payants qui exigent un investissement continu, le référencement naturel génère un trafic qualifié sur le long terme. Pour une startup avec des ressources limitées, chaque euro investi dans le SEO produit un ROI moyen 5 à 10 fois supérieur aux campagnes paid." },
-                    { h: "H2 : Les 4 piliers d'une stratégie SEO pour PME", p: "Une stratégie SEO efficace pour startup repose sur quatre fondamentaux : la recherche de mots-clés à forte intention commerciale, l'optimisation technique pour la performance, la création de contenu expert qui répond aux problématiques de votre audience, et le netlinking stratégique pour renforcer votre autorité de domaine." },
-                    { h: "H2 : Comment identifier les bons mots-clés pour votre business", p: "La recherche de mots-clés pour startup doit privilégier les termes de longue traîne (3+ mots) avec un volume entre 100 et 1000 requêtes/mois et une difficulté SEO inférieure à 40. Ces keywords de niche offrent un taux de conversion 2,5 fois supérieur aux termes génériques." },
-                  ].map(block => (
-                    <div key={block.h} className="mt-3">
-                      <h2 className="text-sm font-semibold text-purple-300 mb-1.5">{block.h}</h2>
-                      <p className="text-slate-400 text-xs leading-relaxed">{block.p}</p>
+              {generatedArticle && (
+                <>
+                  {generatedArticle.metaDescription && (
+                    <div className="p-3 rounded-xl bg-[#070d22] border border-purple-500/15">
+                      <div className="text-[10px] text-slate-500 font-mono mb-1 uppercase">Meta Description</div>
+                      <p className="text-slate-300 text-xs">{generatedArticle.metaDescription}</p>
                     </div>
-                  ))}
+                  )}
 
-                  <div className="mt-4 p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
-                    <div className="text-[10px] text-cyan-400 font-mono mb-2 uppercase">Section FAQ (générée automatiquement)</div>
-                    {[
-                      { q: "Combien de temps faut-il pour voir des résultats SEO ?", a: "Les premiers résultats visibles apparaissent généralement après 3 mois avec une stratégie bien exécutée. Le trafic organique connaît une croissance composée significative entre les mois 6 et 12." },
-                      { q: "Quel budget SEO pour une startup ?", a: "Pour une startup, un investissement mensuel de 1 500 à 3 000€ en content marketing et netlinking permet d'obtenir des résultats tangibles. Le SEO offre le meilleur ROI à long terme comparé aux canaux paid." },
-                    ].map(faq => (
-                      <div key={faq.q} className="mb-2">
-                        <p className="text-xs font-medium text-slate-300">Q : {faq.q}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">R : {faq.a}</p>
+                  <div className="space-y-3">
+                    <h1 className="text-xl font-bold text-white leading-tight">{generatedArticle.title}</h1>
+                    <div className="flex gap-2 flex-wrap">
+                      {[mainKeyword].filter(Boolean).map(keyword => (
+                        <span key={keyword} className="px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/25 text-purple-300 text-[10px] font-mono">{keyword}</span>
+                      ))}
+                    </div>
+
+                    <div className="prose prose-sm prose-invert max-w-none">
+                      {generatedArticle.content.split(/\n{2,}/).map((section, index) => {
+                        const text = section.trim();
+                        if (!text) return null;
+                        if (text.startsWith("## ")) {
+                          return <h2 key={index} className="mt-3 text-sm font-semibold text-purple-300 mb-1.5">{text.slice(3)}</h2>;
+                        }
+                        return <p key={index} className="text-slate-400 leading-relaxed text-xs whitespace-pre-line">{text}</p>;
+                      })}
+                    </div>
+
+                    {generatedArticle.faq.length > 0 && (
+                      <div className="mt-4 p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
+                        <div className="text-[10px] text-cyan-400 font-mono mb-2 uppercase">Section FAQ</div>
+                        {generatedArticle.faq.map((item, index) => (
+                          <div key={`${item.question}-${index}`} className="mb-2">
+                            <p className="text-xs font-medium text-slate-300">Q : {item.question}</p>
+                            <p className="text-xs text-slate-400 mt-0.5">R : {item.answer}</p>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
-              </div>
-
+                </>
+              )}
               {/* Zone de prompt de modification IA */}
               <div className="mt-4 p-4 rounded-xl bg-gradient-to-r from-purple-500/8 to-violet-500/5 border border-purple-500/25">
                 <div className="flex items-center gap-2 mb-3">
@@ -1284,9 +1348,41 @@ function KnowledgeScreen() {
 }
 
 // ─── WordPress ─────────────────────────────────────────────────────────────────
-function WordPressScreen() {
+interface StoredArticle {
+  id: string;
+  title: string | null;
+  subject?: string | null;
+  main_keyword?: string | null;
+  secondary_keywords?: string[] | null;
+  audience?: string | null;
+  tone?: string | null;
+  article_length?: string | null;
+  meta_description?: string | null;
+  content?: string | null;
+  status?: ArticleStatus;
+}
+
+function WordPressScreen({ articleId }: { articleId: string | null }) {
   const [publishStatus, setPublishStatus] = useState<"immediate" | "scheduled" | "draft">("immediate");
   const [published, setPublished] = useState(false);
+  const [article, setArticle] = useState<StoredArticle | null>(null);
+  const [articleError, setArticleError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!articleId) { setArticle(null); setArticleError(null); return; }
+    const controller = new AbortController();
+    void fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Impossible de charger cet article.");
+        setArticle(await response.json() as StoredArticle);
+        setArticleError(null);
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setArticleError(error instanceof Error ? error.message : "Erreur pendant le chargement de l'article.");
+      });
+    return () => controller.abort();
+  }, [articleId]);
 
   const btnLabel = publishStatus === "immediate" ? "Publier sur WordPress" :
     publishStatus === "scheduled" ? "Planifier la publication" : "Mettre à jour le brouillon";
@@ -1334,8 +1430,15 @@ function WordPressScreen() {
             <div>
               <label className="block text-xs text-slate-300 font-mono mb-1.5">Article</label>
               <div className="px-3 py-2.5 rounded-xl bg-[#070d22] border border-purple-500/20 text-sm text-slate-200 truncate">
-                SEO pour startups : stratégie complète de génération de leads
+                {articleId ? (article?.title || (articleError ? articleError : "Chargement de l'article...")) : "Aucun article sélectionné"}
               </div>
+              {articleId && article && (
+                <div className="mt-2 space-y-1 text-xs text-slate-500">
+                  <p className="truncate">Meta description : {article.meta_description || "Aucune meta description"}</p>
+                  <p className="line-clamp-3 whitespace-pre-wrap">Contenu à publier : {article.content || "Aucun contenu"}</p>
+                  {article.main_keyword && <p>Mot-clé principal : {article.main_keyword}</p>}
+                </div>
+              )}
             </div>
 
             {/* Statut en premier */}
@@ -1375,15 +1478,20 @@ function WordPressScreen() {
               <div>
                 <label className="block text-xs text-slate-300 font-mono mb-1.5">Catégorie</label>
                 <select className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:outline-none">
-                  <option>Technologie & Innovation</option>
-                  <option>Gouvernance</option>
-                  <option>Stratégie</option>
+                  {articleId ? <option>Aucune catégorie associée</option> : <>
+                    <option>Technologie & Innovation</option>
+                    <option>Gouvernance</option>
+                    <option>Stratégie</option>
+                  </>}
                 </select>
               </div>
               <div>
                 <label className="block text-xs text-slate-300 font-mono mb-1.5">Tags</label>
                 <div className="flex gap-1.5 flex-wrap p-2 rounded-xl bg-[#070d22] border border-purple-500/20 min-h-[38px]">
-                  {["SEO", "startup", "2025"].map(tag => (
+                  {(articleId
+                    ? [...new Set([article?.main_keyword, ...(article?.secondary_keywords || [])].filter((keyword): keyword is string => Boolean(keyword?.trim())))]
+                    : ["SEO", "startup", "2025"]
+                  ).map(tag => (
                     <div key={tag} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/25 text-purple-200 text-xs">
                       {tag} <X size={9} className="cursor-pointer hover:text-white" />
                     </div>
@@ -2013,19 +2121,50 @@ const AI_ACTIONS: { id: AiAction; label: string; icon: any; color: string }[] = 
   { id: "simplifier", label: "Simplifier", icon: Scissors, color: "text-pink-400" },
 ];
 
-function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
-  const [sections, setSections] = useState(ARTICLE_CONTENT.map(s => ({ ...s })));
+function EditorScreen({ onNavigate, articleId }: { onNavigate: (s: Screen) => void; articleId: string | null }) {
+  const [sections, setSections] = useState<ArticleSection[]>(() => articleId ? [] : ARTICLE_CONTENT.map(s => ({ ...s, type: s.type as "intro" | "section" })));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [aiMenuId, setAiMenuId] = useState<string | null>(null);
   const [aiPromptTexts, setAiPromptTexts] = useState<Record<string, string>>({});
-  const [title, setTitle] = useState("SEO pour startups : stratégie complète de génération de leads organiques (2025)");
+  const [title, setTitle] = useState("");
+  const [metaDescription, setMetaDescription] = useState("");
+  const [articleStatus, setArticleStatus] = useState<ArticleStatus>("draft");
+  const [articleLoading, setArticleLoading] = useState(Boolean(articleId));
+  const [articleError, setArticleError] = useState<string | null>(null);
   const [seoScore] = useState(87);
   const [readability] = useState(74);
-  const [articleStatus, setArticleStatus] = useState<"draft" | "review" | "scheduled">("draft");
   const [lastSaved, setLastSaved] = useState("Il y a quelques secondes");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!articleId) {
+      setArticleLoading(false);
+      setArticleError(null);
+      setTitle("SEO pour startups : stratégie complète de génération de leads organiques (2025)");
+      setSections(ARTICLE_CONTENT.map(section => ({ ...section, type: section.type as "intro" | "section" })));
+      return;
+    }
+    const controller = new AbortController();
+    setArticleLoading(true);
+    setArticleError(null);
+    void fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error(response.status === 404 ? "Cet article n'existe plus." : "Impossible de charger l'article.");
+        const article = await response.json() as StoredArticle;
+        setTitle(article.title || "Article sans titre");
+        setMetaDescription(article.meta_description || "");
+        setSections(contentToSections(article.content || ""));
+        setArticleStatus(article.status || "draft");
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setArticleError(error instanceof Error ? error.message : "Erreur pendant le chargement de l'article.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setArticleLoading(false); });
+    return () => controller.abort();
+  }, [articleId]);
 
   const setPromptText = (sectionId: string, text: string) => {
     setAiPromptTexts(prev => ({ ...prev, [sectionId]: text }));
@@ -2086,12 +2225,29 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const scoreColor = seoScore >= 80 ? "#34d399" : seoScore >= 60 ? "#fbbf24" : "#f87171";
   const readColor = readability >= 70 ? "#34d399" : readability >= 50 ? "#fbbf24" : "#f87171";
 
-  const handleSave = () => {
+  const handleSave = async (statusToSave = articleStatus) => {
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false);
+    try {
+      if (articleId) {
+        const response = await fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, content: sectionsToContent(sections), meta_description: metaDescription, status: statusToSave }),
+        });
+        if (!response.ok) {
+          const body = await response.json() as { error?: string };
+          throw new Error(body.error || "L'enregistrement de l'article a échoué.");
+        }
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+      setArticleError(null);
       setLastSaved("À l'instant");
-    }, 800);
+    } catch (error) {
+      setArticleError(error instanceof Error ? error.message : "L'enregistrement de l'article a échoué.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -2118,14 +2274,14 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
         <div className="ml-auto flex items-center gap-2">
           <button
-            onClick={handleSave}
+            onClick={() => { void handleSave(); }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0b1028] border border-purple-500/15 text-slate-400 hover:text-white text-xs transition-all"
           >
             <Download size={11} /> Enregistrer
           </button>
           {articleStatus === "draft" && (
             <button
-              onClick={() => { setArticleStatus("review"); handleSave(); }}
+              onClick={() => { setArticleStatus("review"); void handleSave("review"); }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-600/30 text-xs font-medium transition-all"
             >
               <CheckCircle size={11} /> Passer en révision
@@ -2144,6 +2300,8 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         {/* Zone d'édition */}
         <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-2xl mx-auto space-y-6">
+            {articleLoading && <p className="text-sm text-slate-400">Chargement de l'article...</p>}
+            {articleError && <p className="text-sm text-rose-300">{articleError}</p>}
             {/* Titre */}
             <div className="group relative">
               <textarea
@@ -2162,9 +2320,9 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             <div className="p-3 rounded-xl bg-[#070d22] border border-yellow-500/20">
               <div className="flex items-center gap-2 mb-1.5">
                 <AlertCircle size={11} className="text-yellow-400" />
-                <span className="text-[10px] text-yellow-400 font-mono uppercase">Meta description manquante</span>
+                <span className="text-[10px] text-yellow-400 font-mono uppercase">{metaDescription ? "Meta description" : "Meta description manquante"}</span>
               </div>
-              <input placeholder="Rédigez votre meta description (150–160 caractères idéalement)..."
+              <input value={metaDescription} onChange={event => setMetaDescription(event.target.value)} placeholder="Rédigez votre meta description (150–160 caractères idéalement)..."
                 className="w-full bg-transparent text-xs text-slate-400 placeholder-slate-600 focus:outline-none" />
             </div>
 
@@ -2413,7 +2571,7 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
           {/* CTA contextuel */}
           {articleStatus === "draft" && (
             <button
-              onClick={() => { setArticleStatus("review"); handleSave(); }}
+              onClick={() => { setArticleStatus("review"); void handleSave("review"); }}
               className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/25 hover:scale-[1.02] transition-transform"
             >
               <CheckCircle size={13} /> Passer en révision
@@ -2445,6 +2603,11 @@ function EditorScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 function AppShell({ onLogout }: { onLogout: () => void }) {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [collapsed, setCollapsed] = useState(false);
+  const [currentArticleId, setCurrentArticleId] = useState<string | null>(null);
+  const selectArticle = (id: string, destination: Screen) => {
+    setCurrentArticleId(id);
+    setScreen(destination);
+  };
 
   const screenTitles: Record<Screen, { title: string; subtitle?: string }> = {
     landing: { title: "" },
@@ -2464,25 +2627,26 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="h-screen flex bg-[#050816] overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
-      <Sidebar active={screen} onChange={setScreen} collapsed={collapsed} onToggle={() => setCollapsed(c => !c)} onLogout={onLogout} />
+      <Sidebar active={screen} onChange={nextScreen => setScreen(nextScreen === "editor" && !currentArticleId ? "articles" : nextScreen)} collapsed={collapsed} onToggle={() => setCollapsed(c => !c)} onLogout={onLogout} />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar {...screenTitles[screen]} />
         <main className="flex-1 overflow-hidden">
           {screen === "dashboard" && <DashboardScreen onNavigate={setScreen} />}
-          {screen === "articles" && <ArticlesScreen onNavigate={setScreen} />}
+          {screen === "articles" && <ArticlesScreen onNavigate={setScreen} onSelectArticle={selectArticle} />}
           {screen === "assistant" && <AssistantScreen />}
           {screen === "research" && <ResearchScreen onNavigate={setScreen} />}
-          {screen === "generate" && <GenerateScreen onNavigate={setScreen} />}
-          {screen === "editor" && <EditorScreen onNavigate={setScreen} />}
+          {screen === "generate" && <GenerateScreen onNavigate={setScreen} onGeneratedArticle={setCurrentArticleId} />}
+          {screen === "editor" && <EditorScreen onNavigate={setScreen} articleId={currentArticleId} />}
           {screen === "visual" && <VisualEnrichment
-            sections={ARTICLE_CONTENT.map(s => ({ ...s }))}
-            title="SEO pour startups : stratégie complète de génération de leads organiques (2025)"
+            articleId={currentArticleId}
+            sections={[]}
+            title=""
             onBack={() => setScreen("editor")}
             onNext={() => setScreen("articles")}
             onPublish={() => setScreen("wordpress")}
           />}
           {screen === "knowledge" && <KnowledgeScreen />}
-          {screen === "wordpress" && <WordPressScreen />}
+          {screen === "wordpress" && <WordPressScreen articleId={currentArticleId} />}
           {screen === "media" && <MediaScreen />}
           {screen === "analytics" && <AnalyticsScreen />}
         </main>

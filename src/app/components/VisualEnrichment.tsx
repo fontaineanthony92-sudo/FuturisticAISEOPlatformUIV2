@@ -29,6 +29,14 @@ interface MediaItem {
   height?: number;
 }
 
+interface MediaAssetResponse {
+  id: string;
+  filename: string;
+  public_url: string;
+  alt_text: string | null;
+  source: string;
+}
+
 interface ArticleImage {
   id: string;
   mediaId: string;
@@ -104,10 +112,39 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
   const uploadRef = useRef<HTMLInputElement>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
   const [showValidationModal, setShowValidationModal] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("http://localhost:3001/api/media", { signal: controller.signal })
+      .then(async response => {
+        const result = await response.json() as MediaAssetResponse[] | { error?: string };
+        if (!response.ok) throw new Error(Array.isArray(result) ? "Impossible de charger la bibliothèque média." : result.error || "Impossible de charger la bibliothèque média.");
+        const assets = Array.isArray(result) ? result : [];
+        const uploadedMedia: MediaItem[] = assets.map(asset => ({
+          id: asset.id,
+          url: asset.public_url,
+          thumbnail: asset.public_url,
+          title: asset.alt_text || asset.filename,
+          source: "upload",
+        }));
+        const fetchedIds = new Set(uploadedMedia.map(media => media.id));
+        setMediaLibrary(previous => [
+          ...previous.filter(media => media.source !== "upload" || !fetchedIds.has(media.id)),
+          ...uploadedMedia,
+        ]);
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setUploadError(error instanceof Error ? error.message : "Impossible de charger la bibliothèque média.");
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!articleId) {
@@ -159,6 +196,16 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type)) {
+      setUploadError("Format non accepté. Utilisez JPG, PNG, WebP ou GIF.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError("Le fichier dépasse la taille maximale de 10 Mo.");
+      return;
+    }
+    setUploadError(null);
+    setUploadFile(file);
     const reader = new FileReader();
     reader.onload = (event) => {
       const url = event.target?.result as string;
@@ -169,26 +216,38 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFileSelect(e.target.files);
+    e.currentTarget.value = "";
   };
 
-  const handleUploadConfirm = () => {
-    if (!uploadPreview) return;
-
+  const handleUploadConfirm = async () => {
+    if (!uploadFile) return;
     setUploading(true);
-    setTimeout(() => {
+    setUploadError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      const response = await fetch("http://localhost:3001/api/media/upload", { method: "POST", body: formData });
+      const result = await response.json() as MediaAssetResponse | { error?: string };
+      if (!response.ok || !("public_url" in result)) {
+        throw new Error("error" in result ? result.error || "Impossible d'importer cette image." : "Impossible d'importer cette image.");
+      }
       const newMedia: MediaItem = {
-        id: `upload-${Date.now()}-${Math.random()}`,
-        url: uploadPreview,
-        thumbnail: uploadPreview,
-        title: `Image_${Date.now()}.jpg`,
+        id: result.id,
+        url: result.public_url,
+        thumbnail: result.public_url,
+        title: result.alt_text || result.filename,
         source: "upload",
       };
       setMediaLibrary((prev) => [newMedia, ...prev]);
       setSelectedSource("upload");
-      setUploading(false);
       setUploadModalOpen(false);
       setUploadPreview(null);
-    }, 800);
+      setUploadFile(null);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Impossible de joindre le backend NexusSEO.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleModalDragOver = (e: DragEvent) => {
@@ -509,6 +568,8 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                   ))}
                 </div>
 
+                {uploadError && <p className="text-[10px] text-rose-300" role="alert">{uploadError}</p>}
+
                 {/* Media grid */}
                 <div className="grid grid-cols-2 gap-2">
                   {mediaLibrary
@@ -622,6 +683,8 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                   onClick={() => {
                     setUploadModalOpen(false);
                     setUploadPreview(null);
+                    setUploadFile(null);
+                    setUploadError(null);
                   }}
                   className="p-1.5 rounded-lg hover:bg-purple-500/10 text-slate-400 hover:text-white transition-all"
                 >
@@ -645,7 +708,7 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                     <input
                       ref={uploadRef}
                       type="file"
-                      accept="image/*"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
                       className="hidden"
                       onChange={handleFileUpload}
                     />
@@ -685,7 +748,7 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                     {/* Actions */}
                     <div className="flex items-center justify-between">
                       <button
-                        onClick={() => setUploadPreview(null)}
+                        onClick={() => { setUploadPreview(null); setUploadFile(null); setUploadError(null); }}
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#070d22] border border-purple-500/15 text-slate-400 hover:text-white text-sm transition-all"
                       >
                         <X size={14} />
@@ -711,6 +774,7 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                     </div>
                   </div>
                 )}
+                {uploadError && <p className="mt-3 text-xs text-rose-300" role="alert">{uploadError}</p>}
               </div>
             </div>
           </div>

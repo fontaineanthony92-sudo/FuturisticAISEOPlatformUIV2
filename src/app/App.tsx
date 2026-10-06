@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, FileText, Bot, Sparkles, Database, Globe, Image,
   BarChart3, Calendar, Settings, ChevronRight, Search, Bell,
@@ -1672,22 +1672,99 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
 }
 
 // ─── Media ─────────────────────────────────────────────────────────────────────
+interface MediaAsset {
+  id: string;
+  filename: string;
+  storage_path: string;
+  public_url: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  alt_text: string | null;
+  source: string;
+  created_at: string;
+}
+
 function MediaScreen() {
-  const images = [
-    { id: 1, src: "https://images.unsplash.com/photo-1677442135703-1787eea5ce01?w=400&h=280&fit=crop&auto=format", label: "Intelligence Artificielle" },
-    { id: 2, src: "https://images.unsplash.com/photo-1620712943543-bcc4688e7485?w=400&h=280&fit=crop&auto=format", label: "Réseau Digital" },
-    { id: 3, src: "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=400&h=280&fit=crop&auto=format", label: "Data Analytics" },
-    { id: 4, src: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop&auto=format", label: "Réunion stratégique" },
-    { id: 5, src: "https://images.unsplash.com/photo-1504868584819-f8e8b4b6d7e3?w=400&h=280&fit=crop&auto=format", label: "Tableau de bord" },
-    { id: 6, src: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400&h=280&fit=crop&auto=format", label: "Réseau mondial" },
-  ];
-  const [selected, setSelected] = useState<number | null>(1);
+  const [images, setImages] = useState<MediaAsset[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [altText, setAltText] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [savingAlt, setSavingAlt] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const selected = images.find(image => image.id === selectedId) ?? null;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("http://localhost:3001/api/media", { signal: controller.signal })
+      .then(async response => {
+        const result = await response.json() as MediaAsset[] | { error?: string };
+        if (!response.ok) throw new Error(Array.isArray(result) ? "Impossible de charger les médias." : result.error || "Impossible de charger les médias.");
+        const assets = Array.isArray(result) ? result : [];
+        setImages(assets);
+        setSelectedId(assets[0]?.id ?? null);
+        setAltText(assets[0]?.alt_text ?? "");
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setMediaError(error instanceof Error ? error.message : "Impossible de charger les médias.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, []);
+
+  const handleMediaUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    setMediaError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("http://localhost:3001/api/media/upload", { method: "POST", body: formData });
+      const result = await response.json() as MediaAsset | { error?: string };
+      if (!response.ok || !("public_url" in result)) throw new Error("error" in result ? result.error || "Impossible d'importer cette image." : "Impossible d'importer cette image.");
+      setImages(previous => [result, ...previous]);
+      setSelectedId(result.id);
+      setAltText(result.alt_text ?? "");
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : "Impossible de joindre le backend NexusSEO.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const saveAltText = async () => {
+    if (!selected) return;
+    setSavingAlt(true);
+    setMediaError(null);
+    try {
+      const response = await fetch(`http://localhost:3001/api/media/${encodeURIComponent(selected.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alt_text: altText }),
+      });
+      const result = await response.json() as MediaAsset | { error?: string };
+      if (!response.ok || !("id" in result)) throw new Error("error" in result ? result.error || "Impossible d'enregistrer le texte alt." : "Impossible d'enregistrer le texte alt.");
+      setImages(previous => previous.map(image => image.id === result.id ? result : image));
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : "Impossible d'enregistrer le texte alt.");
+    } finally {
+      setSavingAlt(false);
+    }
+  };
+
+  const formatFileSize = (size: number | null) => size === null ? "Taille inconnue" :
+    size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(1)} Mo` : `${Math.max(1, Math.round(size / 1024))} Ko`;
 
   return (
     <div className="p-5 h-full overflow-y-auto space-y-5">
       <div className="flex items-center gap-3 flex-wrap">
-        <button className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 text-white text-sm font-medium shadow-lg shadow-purple-500/20 hover:scale-105 transition-transform">
-          <Upload size={14} /> Importer des images
+        <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={handleMediaUpload} />
+        <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 text-white text-sm font-medium shadow-lg shadow-purple-500/20 hover:scale-105 transition-transform disabled:opacity-60">
+          <Upload size={14} /> {uploading ? "Import en cours..." : "Importer des images"}
         </button>
         <button className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0b1028] border border-purple-500/20 text-slate-400 hover:text-white text-sm transition-all">
           <Sparkles size={14} className="text-purple-400" /> Suggestions IA d'images
@@ -1700,14 +1777,16 @@ function MediaScreen() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Grille d'images */}
         <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-3 gap-3">
+          {loading && <p className="col-span-full text-sm text-slate-400">Chargement de la bibliothèque média...</p>}
+          {!loading && images.length === 0 && !mediaError && <p className="col-span-full text-sm text-slate-500">Aucune image dans la bibliothèque média.</p>}
           {images.map(img => (
-            <div key={img.id} onClick={() => setSelected(img.id)}
-              className={`relative rounded-xl overflow-hidden cursor-pointer transition-all group aspect-video ${selected === img.id ? "ring-2 ring-purple-500 shadow-lg shadow-purple-500/25" : "hover:ring-1 hover:ring-purple-500/40"}`}>
-              <img src={img.src} alt={img.label} className="w-full h-full object-cover" />
+            <div key={img.id} onClick={() => { setSelectedId(img.id); setAltText(img.alt_text ?? ""); }}
+              className={`relative rounded-xl overflow-hidden cursor-pointer transition-all group aspect-video ${selectedId === img.id ? "ring-2 ring-purple-500 shadow-lg shadow-purple-500/25" : "hover:ring-1 hover:ring-purple-500/40"}`}>
+              <img src={img.public_url} alt={img.alt_text || img.filename} className="w-full h-full object-cover" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
-                <span className="text-white text-xs font-medium">{img.label}</span>
+                <span className="text-white text-xs font-medium">{img.alt_text || img.filename}</span>
               </div>
-              {selected === img.id && (
+              {selectedId === img.id && (
                 <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-purple-600 flex items-center justify-center">
                   <CheckCircle size={11} className="text-white" />
                 </div>
@@ -1719,29 +1798,33 @@ function MediaScreen() {
         {/* Détails */}
         <GlassCard className="p-4 space-y-4" glow>
           <h3 className="text-sm font-semibold text-white">Détails de l'image</h3>
-          {selected !== null && (
+          {mediaError && <p className="text-xs text-rose-300" role="alert">{mediaError}</p>}
+          {selected && (
             <>
               <div className="rounded-xl overflow-hidden aspect-video">
-                <img src={images.find(i => i.id === selected)?.src} alt="" className="w-full h-full object-cover" />
+                <img src={selected.public_url} alt={selected.alt_text ?? ""} className="w-full h-full object-cover" />
               </div>
               <div className="space-y-2 text-xs font-mono">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Fichier</span>
-                  <span className="text-slate-300">ia-technologie.jpg</span>
+                  <span className="text-slate-300">{selected.filename}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Dimensions</span>
-                  <span className="text-slate-300">1920×1080 · 840 Ko</span>
+                  <span className="text-slate-300">{formatFileSize(selected.size_bytes)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Source</span>
-                  <span className="text-cyan-400">Unsplash</span>
+                  <span className="text-cyan-400">{selected.source}</span>
                 </div>
               </div>
               <div>
                 <label className="block text-xs text-slate-400 font-mono mb-1">Texte alt</label>
-                <input defaultValue="Visualisation du concept de gouvernance IA" className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none" />
+                <input value={altText} onChange={event => setAltText(event.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none" />
               </div>
+              <button onClick={() => { void saveAltText(); }} disabled={savingAlt} className="w-full py-2 rounded-xl bg-[#070d22] border border-purple-500/15 text-slate-300 text-xs hover:text-white transition-colors disabled:opacity-60">
+                {savingAlt ? "Enregistrement..." : "Enregistrer le texte alt"}
+              </button>
               <div className="flex gap-2">
                 <button className="flex-1 py-2 rounded-xl bg-purple-600/20 border border-purple-500/30 text-purple-300 text-xs hover:bg-purple-600/30 transition-colors flex items-center justify-center gap-1">
                   <Star size={10} /> Image à la une

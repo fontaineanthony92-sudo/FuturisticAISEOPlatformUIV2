@@ -4,6 +4,7 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import articlesRouter from "./routes/articles.ts";
 import generateArticleRouter from "./routes/generateArticle.ts";
+import mediaRouter from "./routes/media.ts";
 import wordpressRouter from "./routes/wordpress.ts";
 
 dotenv.config({ path: fileURLToPath(new URL("../.env", import.meta.url)) });
@@ -21,6 +22,7 @@ app.use(
 
 app.use("/api/articles", articlesRouter);
 app.use("/api/generate-article", generateArticleRouter);
+app.use("/api/media", mediaRouter);
 app.use("/api/wordpress", wordpressRouter);
 
 app.get("/api/health", (_request, response) => {

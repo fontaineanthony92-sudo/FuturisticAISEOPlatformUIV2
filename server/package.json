@@ -13,8 +13,10 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "marked": "^18.1.0",
     "multer": "^2.4.0",
-    "openai": "^7.28.0"
+    "openai": "^7.28.0",
+    "sanitize-html": "^2.18.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

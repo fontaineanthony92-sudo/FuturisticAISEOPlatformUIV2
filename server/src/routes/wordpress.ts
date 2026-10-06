@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
+import { marked } from "marked";
+import sanitizeHtml from "sanitize-html";
 import { supabase } from "../lib/supabase.ts";
 import {
   createOAuthState,
@@ -238,9 +240,15 @@ router.post("/publish/:articleId", asyncRoute(async (request, response) => {
     }
   }
 
-  const wordpressContent = replaceMediaUrls(article.content, new Map(
+  const wordpressMarkdown = replaceMediaUrls(article.content, new Map(
     [...mediaByPublicUrl.entries()].flatMap(([sourceUrl, media]) => media.wordpress_url ? [[sourceUrl, media.wordpress_url] as const] : []),
   ));
+  const wordpressContent = sanitizeHtml(await marked.parse(wordpressMarkdown), {
+    allowedTags: ["h1", "h2", "h3", "p", "strong", "em", "ul", "ol", "li", "blockquote", "code", "pre", "hr", "img", "a", "br"],
+    allowedAttributes: { a: ["href", "title"], img: ["src", "alt", "title"] },
+    allowedSchemes: ["https", "http", "mailto"],
+    allowedSchemesByTag: { img: ["https"] },
+  });
 
   let wordpressResponse: globalThis.Response;
   try {

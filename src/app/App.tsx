@@ -15,6 +15,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from "recharts";
 import { VisualEnrichment } from "./components/VisualEnrichment";
+import { MarkdownArticle } from "./components/MarkdownArticle";
 import { ArticleSection, contentToSections, sectionsToContent } from "./utils/articleContent";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -985,7 +986,12 @@ function AssistantScreen() {
 }
 
 // ─── Génération d'article ───────────────────────────────────────────────────────
-function GenerateScreen({ onNavigate, onGeneratedArticle }: { onNavigate?: (s: Screen) => void; onGeneratedArticle?: (id: string) => void }) {
+function GenerateScreen({ onNavigate, onGeneratedArticle, seoPrefill, onSeoPrefillApplied }: {
+  onNavigate?: (s: Screen) => void;
+  onGeneratedArticle?: (id: string) => void;
+  seoPrefill?: { topic: string; keyword: string } | null;
+  onSeoPrefillApplied?: () => void;
+}) {
   const [subject, setSubject] = useState("Stratégie SEO complète pour startups et PME");
   const [mainKeyword, setMainKeyword] = useState("SEO startup");
   const [audience, setAudience] = useState("Fondateurs de startup");
@@ -1005,6 +1011,13 @@ function GenerateScreen({ onNavigate, onGeneratedArticle }: { onNavigate?: (s: S
   } | null>(null);
   const [promptModify, setPromptModify] = useState("");
   const [applyingPrompt, setApplyingPrompt] = useState(false);
+
+  useEffect(() => {
+    if (!seoPrefill) return;
+    setSubject(seoPrefill.topic);
+    setMainKeyword(seoPrefill.keyword);
+    onSeoPrefillApplied?.();
+  }, [seoPrefill]);
 
   const tones = [
     { key: "professionnel", label: "Professionnel" },
@@ -1183,16 +1196,7 @@ function GenerateScreen({ onNavigate, onGeneratedArticle }: { onNavigate?: (s: S
                       ))}
                     </div>
 
-                    <div className="prose prose-sm prose-invert max-w-none">
-                      {generatedArticle.content.split(/\n{2,}/).map((section, index) => {
-                        const text = section.trim();
-                        if (!text) return null;
-                        if (text.startsWith("## ")) {
-                          return <h2 key={index} className="mt-3 text-sm font-semibold text-purple-300 mb-1.5">{text.slice(3)}</h2>;
-                        }
-                        return <p key={index} className="text-slate-400 leading-relaxed text-xs whitespace-pre-line">{text}</p>;
-                      })}
-                    </div>
+                    <MarkdownArticle content={generatedArticle.content} className="text-xs" />
 
                     {generatedArticle.faq.length > 0 && (
                       <div className="mt-4 p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
@@ -1547,7 +1551,12 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
               {articleId && article && (
                 <div className="mt-2 space-y-1 text-xs text-slate-500">
                   <p className="truncate">Meta description : {article.meta_description || "Aucune meta description"}</p>
-                  <p className="line-clamp-3 whitespace-pre-wrap">Contenu à publier : {article.content || "Aucun contenu"}</p>
+                  <div className="max-h-24 overflow-hidden text-xs">
+                    <p className="mb-1 text-slate-400">Contenu à publier :</p>
+                    {article.content
+                      ? <MarkdownArticle content={article.content} />
+                      : <p>Aucun contenu</p>}
+                  </div>
                   {article.main_keyword && <p>Mot-clé principal : {article.main_keyword}</p>}
                 </div>
               )}
@@ -2047,7 +2056,7 @@ const INTENT_COLOR: Record<string, string> = {
   Informationnel: "purple", Commercial: "cyan", Transactionnel: "pink", Navigationnel: "green",
 };
 
-function ResearchScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+function MockResearchScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -2325,6 +2334,181 @@ function ResearchScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 }
 
 // ─── Éditeur d'article ─────────────────────────────────────────────────────────
+type SeoOpportunity = {
+  keyword: string;
+  intent: "informationnelle" | "commerciale" | "transactionnelle" | "navigationnelle";
+  cluster: string;
+  seoPotential: "fort" | "moyen" | "faible";
+  observedCompetition: "forte" | "moyenne" | "faible";
+  reason: string;
+};
+
+type SeoResearchResponse = {
+  topic: string;
+  market: string;
+  keywords: SeoOpportunity[];
+  sources: Array<{ title: string; url: string }>;
+};
+
+function ResearchScreen({ onGenerateKeyword }: { onGenerateKeyword: (topic: string, keyword: string) => void }) {
+  const [topic, setTopic] = useState("");
+  const [market, setMarket] = useState("France");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<SeoResearchResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleResearch = async () => {
+    if (!topic.trim() || loading) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    let response: Response;
+    try {
+      response = await fetch("http://localhost:3001/api/seo/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: topic.trim(), market: market.trim() || "France" }),
+      });
+    } catch {
+      setError("Impossible de joindre le backend NexusSEO.");
+      setLoading(false);
+      return;
+    }
+
+    let payload: Partial<SeoResearchResponse> & { error?: string };
+    try {
+      payload = await response.json() as Partial<SeoResearchResponse> & { error?: string };
+      console.log("[SEO DEBUG FRONTEND]", {
+        topic: payload.topic,
+        firstKeyword: payload.keywords?.[0]?.keyword,
+        firstReason: payload.keywords?.[0]?.reason,
+      });
+    } catch {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      setError(payload.error || "L'analyse SEO a échoué. Réessayez dans un instant.");
+      setLoading(false);
+      return;
+    }
+    if (!Array.isArray(payload.keywords) || !Array.isArray(payload.sources)) {
+      setError("Le backend a retourné une réponse d'analyse incomplète.");
+      setLoading(false);
+      return;
+    }
+
+    setResult(payload as SeoResearchResponse);
+    setLoading(false);
+  };
+
+  const potentialColor: Record<SeoOpportunity["seoPotential"], string> = {
+    fort: "emerald", moyen: "cyan", faible: "slate",
+  };
+  const competitionColor: Record<SeoOpportunity["observedCompetition"], string> = {
+    forte: "pink", moyenne: "amber", faible: "emerald",
+  };
+  const intentLabel: Record<SeoOpportunity["intent"], string> = {
+    informationnelle: "Informationnelle", commerciale: "Commerciale",
+    transactionnelle: "Transactionnelle", navigationnelle: "Navigationnelle",
+  };
+  const intentColor: Record<SeoOpportunity["intent"], string> = {
+    informationnelle: "purple", commerciale: "cyan", transactionnelle: "pink", navigationnelle: "green",
+  };
+
+  return (
+    <div className="p-5 h-full overflow-y-auto space-y-5">
+      <WorkflowBreadcrumb activeIndex={0} />
+      <GlassCard className="p-5" glow>
+        <div className="flex items-center gap-2 mb-3">
+          <FlaskConical size={15} className="text-purple-400" />
+          <h3 className="text-sm font-semibold text-white">Recherche de mots-clés SEO</h3>
+          <NeonBadge color="cyan">Analyse web + IA</NeonBadge>
+        </div>
+        <div className="flex flex-col md:flex-row gap-3">
+          <div className="flex-1 relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input value={topic} onChange={event => setTopic(event.target.value)}
+              onKeyDown={event => event.key === "Enter" && void handleResearch()}
+              placeholder="Ex. pizza surgelée" aria-label="Sujet ou thématique"
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:border-purple-500/50 focus:outline-none transition-all placeholder-slate-600" />
+          </div>
+          <input value={market} onChange={event => setMarket(event.target.value)} placeholder="France" aria-label="Marché"
+            className="w-full md:w-40 px-3 py-2.5 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-sm focus:border-purple-500/50 focus:outline-none" />
+          <button onClick={() => void handleResearch()} disabled={loading || !topic.trim()}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 hover:from-purple-500 hover:to-violet-500 text-white text-sm font-semibold shadow-lg shadow-purple-500/25 transition-all hover:scale-[1.02] disabled:opacity-60 whitespace-nowrap">
+            {loading ? <><RefreshCw size={13} className="animate-spin" /> Analyse du web en cours...</> : <><Search size={13} /> Analyser les opportunités</>}
+          </button>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-3">Potentiel et concurrence qualitatifs, fondés sur les résultats web observés.</p>
+      </GlassCard>
+
+      {error && <GlassCard className="p-4 border border-red-500/20"><p role="alert" className="text-sm text-red-300">{error}</p></GlassCard>}
+
+      {!result && !loading && !error && (
+        <div className="flex items-center justify-center py-20">
+          <div className="text-center max-w-sm">
+            <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mx-auto mb-4">
+              <FlaskConical size={28} className="text-purple-400" />
+            </div>
+            <p className="text-slate-400 text-sm font-medium">Entrez un sujet ou une idée de contenu</p>
+            <p className="text-slate-600 text-xs mt-1.5 leading-relaxed">L'analyse web repère des formulations et intentions pertinentes pour votre marché.</p>
+          </div>
+        </div>
+      )}
+
+      {loading && <div className="flex items-center justify-center py-16"><p className="text-slate-400 text-sm">Recherche web et analyse des opportunités en cours...</p></div>}
+
+      {result && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-slate-500">{result.keywords.length} opportunités pour <span className="text-purple-300">« {result.topic} »</span> · {result.market}</p>
+            <NeonBadge color="cyan"><Cpu size={8} /> Analyse qualitative</NeonBadge>
+          </div>
+          <div className="space-y-3">
+            {result.keywords.map((opportunity, index) => (
+              <GlassCard key={`${opportunity.keyword}-${index}`} className="p-4" glow>
+                <div className="flex flex-col xl:flex-row xl:items-start gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-white">{opportunity.keyword}</p>
+                    <p className="text-xs text-slate-400 mt-1">{opportunity.reason}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 xl:max-w-[55%]">
+                    <NeonBadge color={intentColor[opportunity.intent] as any}>{intentLabel[opportunity.intent]}</NeonBadge>
+                    <NeonBadge color="purple">{opportunity.cluster}</NeonBadge>
+                    <NeonBadge color={potentialColor[opportunity.seoPotential] as any}>Potentiel {opportunity.seoPotential}</NeonBadge>
+                    <NeonBadge color={competitionColor[opportunity.observedCompetition] as any}>Concurrence {opportunity.observedCompetition}</NeonBadge>
+                    <button onClick={() => onGenerateKeyword(result.topic, opportunity.keyword)}
+                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-violet-600 text-white text-xs font-semibold hover:from-purple-500 hover:to-violet-500 transition-all whitespace-nowrap">
+                      Générer un article
+                    </button>
+                  </div>
+                </div>
+              </GlassCard>
+            ))}
+          </div>
+
+          {result.sources.length > 0 && (
+            <GlassCard className="p-4" glow>
+              <h4 className="text-xs font-semibold text-slate-300 mb-3">Sources analysées</h4>
+              <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {result.sources.slice(0, 8).map(source => (
+                  <li key={source.url}>
+                    <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">
+                      {source.title} <ArrowUpRight size={10} className="inline" />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </GlassCard>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ARTICLE_CONTENT = [
   {
     id: "intro",
@@ -2615,7 +2799,7 @@ function EditorScreen({ onNavigate, articleId }: { onNavigate: (s: Screen) => vo
                       </div>
                     </div>
                   ) : (
-                    <p className="text-sm text-slate-400 leading-relaxed">{section.body}</p>
+                    <MarkdownArticle content={section.body} className="text-sm" />
                   )}
                 </div>
 
@@ -2850,6 +3034,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [currentArticleId, setCurrentArticleId] = useState<string | null>(null);
+  const [seoPrefill, setSeoPrefill] = useState<{ topic: string; keyword: string } | null>(null);
   const selectArticle = (id: string, destination: Screen) => {
     setCurrentArticleId(id);
     setScreen(destination);
@@ -2880,8 +3065,12 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
           {screen === "dashboard" && <DashboardScreen onNavigate={setScreen} />}
           {screen === "articles" && <ArticlesScreen onNavigate={setScreen} onSelectArticle={selectArticle} />}
           {screen === "assistant" && <AssistantScreen />}
-          {screen === "research" && <ResearchScreen onNavigate={setScreen} />}
-          {screen === "generate" && <GenerateScreen onNavigate={setScreen} onGeneratedArticle={setCurrentArticleId} />}
+          {screen === "research" && <ResearchScreen onGenerateKeyword={(topic, keyword) => {
+            setSeoPrefill({ topic, keyword });
+            setScreen("generate");
+          }} />}
+          {screen === "generate" && <GenerateScreen onNavigate={setScreen} onGeneratedArticle={setCurrentArticleId}
+            seoPrefill={seoPrefill} onSeoPrefillApplied={() => setSeoPrefill(null)} />}
           {screen === "editor" && <EditorScreen onNavigate={setScreen} articleId={currentArticleId} />}
           {screen === "visual" && <VisualEnrichment
             articleId={currentArticleId}

@@ -16,6 +16,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { contentToSections, sectionsToContent } from "../utils/articleContent";
+import { MarkdownArticle } from "./MarkdownArticle";
 
 type MediaSource = "upload" | "wordpress" | "unsplash";
 
@@ -733,7 +734,9 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                       {section.type === "section" && section.heading && (
                         <h2 className="text-xl font-semibold text-purple-300 mb-3">{section.heading}</h2>
                       )}
-                      {stripManagedArticleImages(section.body).trim() && <p className="text-sm text-slate-400 leading-relaxed mb-6">{stripManagedArticleImages(section.body).trim()}</p>}
+                      {stripManagedArticleImages(section.body).trim() && (
+                        <MarkdownArticle content={stripManagedArticleImages(section.body).trim()} className="mb-6 text-sm" />
+                      )}
 
                       {media && (
                         <div className="my-8 rounded-xl overflow-hidden">

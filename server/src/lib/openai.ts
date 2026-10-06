@@ -11,6 +11,7 @@ if (!apiKey) {
 }
 
 export const OPENAI_MODEL = "gpt-4o-mini";
+export const OPENAI_SEO_MODEL = process.env.OPENAI_SEO_MODEL?.trim() || "gpt-5.6-luna";
 export const OPENAI_TIMEOUT_MS = 60_000;
 export const openai = new OpenAI({
   apiKey,

@@ -1682,6 +1682,9 @@ interface MediaAsset {
   alt_text: string | null;
   source: string;
   created_at: string;
+  wordpress_media_id: number | null;
+  wordpress_url: string | null;
+  wordpress_synced_at: string | null;
 }
 
 function MediaScreen() {
@@ -1691,6 +1694,8 @@ function MediaScreen() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [savingAlt, setSavingAlt] = useState(false);
+  const [syncingWordPress, setSyncingWordPress] = useState(false);
+  const [wordpressMessage, setWordpressMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selected = images.find(image => image.id === selectedId) ?? null;
@@ -1756,6 +1761,36 @@ function MediaScreen() {
     }
   };
 
+  const sendSelectedToWordPress = async () => {
+    if (!selected) return;
+    setSyncingWordPress(true);
+    setWordpressMessage(null);
+    try {
+      const response = await fetch(`http://localhost:3001/api/media/${encodeURIComponent(selected.id)}/wordpress`, { method: "POST" });
+      const result = await response.json() as {
+        success?: boolean;
+        alreadySynced?: boolean;
+        media?: Pick<MediaAsset, "id" | "wordpress_media_id" | "wordpress_url" | "wordpress_synced_at">;
+        error?: string;
+      };
+      if (!response.ok || result.success !== true || !result.media) {
+        throw new Error(result.error || "Impossible de synchroniser l'image avec WordPress.");
+      }
+      setImages(previous => previous.map(image => image.id === result.media!.id ? { ...image, ...result.media! } : image));
+      setWordpressMessage({
+        text: result.alreadySynced ? "Image déjà présente dans la médiathèque WordPress." : "Image envoyée dans la médiathèque WordPress.",
+        isError: false,
+      });
+    } catch (error) {
+      setWordpressMessage({
+        text: error instanceof TypeError ? "Impossible de joindre le backend NexusSEO." : error instanceof Error ? error.message : "Impossible de synchroniser l'image avec WordPress.",
+        isError: true,
+      });
+    } finally {
+      setSyncingWordPress(false);
+    }
+  };
+
   const formatFileSize = (size: number | null) => size === null ? "Taille inconnue" :
     size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(1)} Mo` : `${Math.max(1, Math.round(size / 1024))} Ko`;
 
@@ -1780,7 +1815,7 @@ function MediaScreen() {
           {loading && <p className="col-span-full text-sm text-slate-400">Chargement de la bibliothèque média...</p>}
           {!loading && images.length === 0 && !mediaError && <p className="col-span-full text-sm text-slate-500">Aucune image dans la bibliothèque média.</p>}
           {images.map(img => (
-            <div key={img.id} onClick={() => { setSelectedId(img.id); setAltText(img.alt_text ?? ""); }}
+            <div key={img.id} onClick={() => { setSelectedId(img.id); setAltText(img.alt_text ?? ""); setWordpressMessage(null); }}
               className={`relative rounded-xl overflow-hidden cursor-pointer transition-all group aspect-video ${selectedId === img.id ? "ring-2 ring-purple-500 shadow-lg shadow-purple-500/25" : "hover:ring-1 hover:ring-purple-500/40"}`}>
               <img src={img.public_url} alt={img.alt_text || img.filename} className="w-full h-full object-cover" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
@@ -1817,7 +1852,19 @@ function MediaScreen() {
                   <span className="text-slate-500">Source</span>
                   <span className="text-cyan-400">{selected.source}</span>
                 </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-500">WordPress</span>
+                  <span className={selected.wordpress_media_id !== null ? "text-emerald-300" : "text-slate-400"}>
+                    {selected.wordpress_media_id !== null ? "Synchronisé" : "Non synchronisé"}
+                  </span>
+                </div>
+                {selected.wordpress_url && (
+                  <a href={selected.wordpress_url} target="_blank" rel="noreferrer" className="inline-block text-cyan-300 underline hover:text-cyan-200">
+                    Ouvrir dans WordPress
+                  </a>
+                )}
               </div>
+              {wordpressMessage && <p className={`text-xs ${wordpressMessage.isError ? "text-rose-300" : "text-emerald-300"}`} role={wordpressMessage.isError ? "alert" : "status"}>{wordpressMessage.text}</p>}
               <div>
                 <label className="block text-xs text-slate-400 font-mono mb-1">Texte alt</label>
                 <input value={altText} onChange={event => setAltText(event.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none" />
@@ -1829,8 +1876,8 @@ function MediaScreen() {
                 <button className="flex-1 py-2 rounded-xl bg-purple-600/20 border border-purple-500/30 text-purple-300 text-xs hover:bg-purple-600/30 transition-colors flex items-center justify-center gap-1">
                   <Star size={10} /> Image à la une
                 </button>
-                <button className="flex-1 py-2 rounded-xl bg-[#070d22] border border-purple-500/15 text-slate-400 text-xs hover:text-white transition-colors flex items-center justify-center gap-1">
-                  <Globe size={10} /> Envoyer vers WP
+                <button onClick={() => { void sendSelectedToWordPress(); }} disabled={syncingWordPress} className="flex-1 py-2 rounded-xl bg-[#070d22] border border-purple-500/15 text-slate-400 text-xs hover:text-white transition-colors flex items-center justify-center gap-1 disabled:opacity-60">
+                  <Globe size={10} /> {syncingWordPress ? "Envoi..." : "Envoyer vers WP"}
                 </button>
               </div>
             </>

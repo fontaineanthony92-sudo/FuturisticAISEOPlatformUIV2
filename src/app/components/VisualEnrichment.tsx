@@ -15,7 +15,7 @@ import {
   ArrowLeft,
   Sparkles,
 } from "lucide-react";
-import { contentToSections } from "../utils/articleContent";
+import { contentToSections, sectionsToContent } from "../utils/articleContent";
 
 type MediaSource = "upload" | "wordpress" | "unsplash";
 
@@ -35,6 +35,28 @@ interface MediaAssetResponse {
   public_url: string;
   alt_text: string | null;
   source: string;
+}
+
+function getManagedArticleImages(content: string): ArticleImage[] {
+  const images: ArticleImage[] = [];
+  const tags = content.match(/<img\b[^>]*\bdata-nexusseo-media-id=["'][^"']+["'][^>]*>/gi) ?? [];
+  for (const [index, tag] of tags.entries()) {
+    const mediaId = tag.match(/\bdata-nexusseo-media-id=["']([^"']+)["']/i)?.[1];
+    const rawPosition = tag.match(/\bdata-nexusseo-position=["']([^"']+)["']/i)?.[1];
+    if (!mediaId || !rawPosition) continue;
+    const position = rawPosition === "featured" || rawPosition === "thumbnail" ? rawPosition : Number(rawPosition);
+    if (typeof position === "number" && !Number.isInteger(position)) continue;
+    images.push({ id: `saved-${mediaId}-${rawPosition}-${index}`, mediaId, position });
+  }
+  return images;
+}
+
+function stripManagedArticleImages(content: string): string {
+  return content.replace(/<img\b(?=[^>]*\bdata-nexusseo-media-id=["'][^"']+["'])[^>]*\/?>/gi, "");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 interface ArticleImage {
@@ -100,7 +122,12 @@ interface VisualEnrichmentProps {
 }
 
 export function VisualEnrichment({ articleId, sections, title, onBack, onNext, onPublish }: VisualEnrichmentProps) {
-  const [loadedArticle, setLoadedArticle] = useState<{ title: string; content: string } | null>(null);
+  const [loadedArticle, setLoadedArticle] = useState<{
+    title: string;
+    content: string;
+    featured_image_url?: string | null;
+    thumbnail_url?: string | null;
+  } | null>(null);
   const [articleLoading, setArticleLoading] = useState(Boolean(articleId));
   const [articleError, setArticleError] = useState<string | null>(null);
   const [articleImages, setArticleImages] = useState<ArticleImage[]>([]);
@@ -110,6 +137,8 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
   const [draggedMedia, setDraggedMedia] = useState<MediaItem | null>(null);
   const [dragOverPosition, setDragOverPosition] = useState<number | "featured" | "thumbnail" | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const articleContentRef = useRef("");
+  const imageSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -149,6 +178,8 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
   useEffect(() => {
     if (!articleId) {
       setLoadedArticle(null);
+      articleContentRef.current = "";
+      setArticleImages([]);
       setArticleError(null);
       setArticleLoading(false);
       return;
@@ -159,8 +190,19 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
     void fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, { signal: controller.signal })
       .then(async response => {
         if (!response.ok) throw new Error(response.status === 404 ? "Cet article n'existe plus." : "Impossible de charger l'article.");
-        const article = await response.json() as { title: string | null; content: string | null };
-        setLoadedArticle({ title: article.title || "Article sans titre", content: article.content || "" });
+        const article = await response.json() as {
+          title: string | null;
+          content: string | null;
+          featured_image_url?: string | null;
+          thumbnail_url?: string | null;
+        };
+        const content = article.content || "";
+        articleContentRef.current = content;
+        setLoadedArticle({ title: article.title || "Article sans titre", content, featured_image_url: article.featured_image_url, thumbnail_url: article.thumbnail_url });
+        const savedImages = getManagedArticleImages(content);
+        if (article.featured_image_url) savedImages.push({ id: `featured-${article.featured_image_url}`, mediaId: article.featured_image_url, position: "featured" });
+        if (article.thumbnail_url) savedImages.push({ id: `thumbnail-${article.thumbnail_url}`, mediaId: article.thumbnail_url, position: "thumbnail" });
+        setArticleImages(savedImages);
       })
       .catch(error => {
         if (error instanceof Error && error.name === "AbortError") return;
@@ -280,31 +322,73 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
     setDragOverPosition(position);
   };
 
+  const persistImageLayout = async (nextImages: ArticleImage[]) => {
+    if (!articleId) return;
+
+    const cleanContent = stripManagedArticleImages(articleContentRef.current);
+    const sectionsWithImages = contentToSections(cleanContent).map((section, index) => {
+      const imageTags = nextImages
+        .filter(image => image.position === index)
+        .map(image => {
+          const media = getMediaById(image.mediaId);
+          if (!media) return "";
+          return `<img data-nexusseo-media-id="${escapeHtmlAttribute(image.mediaId)}" data-nexusseo-position="${index}" src="${escapeHtmlAttribute(media.url)}" alt="${escapeHtmlAttribute(media.title)}" />`;
+        })
+        .filter(Boolean);
+      return { ...section, body: [section.body.trim(), ...imageTags].filter(Boolean).join("\n\n") };
+    });
+    const content = sectionsToContent(sectionsWithImages);
+    const featuredImage = nextImages.find(image => image.position === "featured");
+    const thumbnailImage = nextImages.find(image => image.position === "thumbnail");
+    const featuredUrl = featuredImage ? getMediaById(featuredImage.mediaId)?.url ?? featuredImage.mediaId : null;
+    const thumbnailUrl = thumbnailImage ? getMediaById(thumbnailImage.mediaId)?.url ?? thumbnailImage.mediaId : null;
+    articleContentRef.current = content;
+
+    const save = imageSaveQueue.current.then(async () => {
+      const response = await fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, featured_image_url: featuredUrl, thumbnail_url: thumbnailUrl }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Impossible d'enregistrer les images de l'article.");
+      setLoadedArticle(previous => previous ? { ...previous, content, featured_image_url: featuredUrl, thumbnail_url: thumbnailUrl } : previous);
+      setArticleError(null);
+    });
+    imageSaveQueue.current = save.catch(() => undefined);
+
+    try {
+      await save;
+    } catch (error) {
+      setArticleError(error instanceof Error ? error.message : "Impossible d'enregistrer les images de l'article.");
+    }
+  };
+
   const handleDrop = (e: DragEvent, position: number | "featured" | "thumbnail") => {
     e.preventDefault();
     if (!draggedMedia) return;
 
-    // Remove existing image at this position
-    setArticleImages((prev) => prev.filter((img) => img.position !== position));
-
-    // Add new image
     const newImage: ArticleImage = {
-      id: `img-${Date.now()}`,
+      id: `img-${draggedMedia.id}-${position}`,
       mediaId: draggedMedia.id,
       position,
     };
-    setArticleImages((prev) => [...prev, newImage]);
+    const nextImages = [...articleImages.filter(image => image.position !== position), newImage];
+    setArticleImages(nextImages);
+    void persistImageLayout(nextImages);
 
     setDraggedMedia(null);
     setDragOverPosition(null);
   };
 
   const removeImage = (position: number | "featured" | "thumbnail") => {
-    setArticleImages((prev) => prev.filter((img) => img.position !== position));
+    const nextImages = articleImages.filter(image => image.position !== position);
+    setArticleImages(nextImages);
+    void persistImageLayout(nextImages);
   };
 
   const getMediaById = (mediaId: string): MediaItem | undefined => {
-    return mediaLibrary.find((m) => m.id === mediaId);
+    return mediaLibrary.find((m) => m.id === mediaId || m.url === mediaId);
   };
 
   const ImageSlot = ({
@@ -477,7 +561,7 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                             <p className="text-xs font-medium text-purple-300">
                               {section.type === "intro" ? "Introduction" : section.heading || `Section ${index + 1}`}
                             </p>
-                            <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-1">{section.body}</p>
+                            <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-1">{stripManagedArticleImages(section.body).trim()}</p>
                           </div>
 
                           {/* Image slot after this section */}
@@ -649,7 +733,7 @@ export function VisualEnrichment({ articleId, sections, title, onBack, onNext, o
                       {section.type === "section" && section.heading && (
                         <h2 className="text-xl font-semibold text-purple-300 mb-3">{section.heading}</h2>
                       )}
-                      <p className="text-sm text-slate-400 leading-relaxed mb-6">{section.body}</p>
+                      {stripManagedArticleImages(section.body).trim() && <p className="text-sm text-slate-400 leading-relaxed mb-6">{stripManagedArticleImages(section.body).trim()}</p>}
 
                       {media && (
                         <div className="my-8 rounded-xl overflow-hidden">

@@ -51,3 +51,8 @@ create table if not exists public.media_assets (
 );
 
 alter table public.media_assets enable row level security;
+
+alter table public.media_assets
+  add column if not exists wordpress_media_id bigint,
+  add column if not exists wordpress_url text,
+  add column if not exists wordpress_synced_at timestamptz;

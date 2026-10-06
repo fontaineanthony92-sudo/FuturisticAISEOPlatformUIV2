@@ -3,6 +3,7 @@ import { Router } from "express";
 import type { RequestHandler } from "express";
 import multer from "multer";
 import { supabase } from "../lib/supabase.ts";
+import { syncMediaAssetToWordPress, WordPressMediaError } from "../lib/wordpressMedia.ts";
 
 const router = Router();
 const bucketName = "nexusseo-media";
@@ -61,7 +62,7 @@ function asyncRoute(handler: RequestHandler): RequestHandler {
 router.get("/", asyncRoute(async (_request, response) => {
   const { data, error } = await supabase
     .from("media_assets")
-    .select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at")
+    .select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at,wordpress_media_id,wordpress_url,wordpress_synced_at")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -69,6 +70,39 @@ router.get("/", asyncRoute(async (_request, response) => {
     return response.status(500).json({ error: "Impossible de récupérer la bibliothèque média." });
   }
   return response.json(data ?? []);
+}));
+
+router.post("/:id/wordpress", asyncRoute(async (request, response) => {
+  const { id } = request.params;
+  if (typeof id !== "string" || !isValidId(id)) return response.status(400).json({ error: "L'identifiant du média doit être un UUID valide." });
+
+  const { data: asset, error } = await supabase.from("media_assets")
+    .select("id,filename,public_url,alt_text,wordpress_media_id,wordpress_url,wordpress_synced_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) {
+    console.error("Erreur Supabase lors de la récupération du média pour WordPress.", { code: error.code });
+    return response.status(500).json({ error: "Impossible de récupérer ce média." });
+  }
+  if (!asset) return response.status(404).json({ error: "Média introuvable." });
+
+  try {
+    const synced = await syncMediaAssetToWordPress(asset);
+    return response.json({
+      success: true,
+      alreadySynced: synced.alreadySynced,
+      media: {
+        id: asset.id,
+        wordpress_media_id: synced.wordpress_media_id,
+        wordpress_url: synced.wordpress_url,
+        wordpress_synced_at: synced.wordpress_synced_at,
+      },
+    });
+  } catch (syncError) {
+    if (syncError instanceof WordPressMediaError) return response.status(syncError.statusCode).json({ error: syncError.message });
+    console.error("Erreur lors de la synchronisation média vers WordPress.", syncError instanceof Error ? syncError.message : "Erreur inconnue.");
+    return response.status(500).json({ error: "Impossible de synchroniser ce média avec WordPress." });
+  }
 }));
 
 router.post("/upload", (request, response, next) => {
@@ -111,7 +145,7 @@ router.post("/upload", (request, response, next) => {
     mime_type: file.mimetype,
     size_bytes: file.size,
     source: "upload",
-  }).select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at").single();
+  }).select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at,wordpress_media_id,wordpress_url,wordpress_synced_at").single();
 
   if (databaseError) {
     await supabase.storage.from(bucketName).remove([storagePath]);
@@ -130,7 +164,7 @@ router.put("/:id", asyncRoute(async (request, response) => {
 
   const { data, error } = await supabase.from("media_assets").update({ alt_text: altText })
     .eq("id", id)
-    .select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at")
+    .select("id,filename,storage_path,public_url,mime_type,size_bytes,alt_text,source,created_at,wordpress_media_id,wordpress_url,wordpress_synced_at")
     .maybeSingle();
   if (error) {
     console.error("Erreur Supabase lors de la modification du média.", { code: error.code });

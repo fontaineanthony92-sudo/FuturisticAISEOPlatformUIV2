@@ -8,6 +8,7 @@ import {
   readWordPressToken,
   saveWordPressToken,
 } from "../lib/wordpress.ts";
+import { syncMediaAssetToWordPress, WordPressMediaError } from "../lib/wordpressMedia.ts";
 
 const router = Router();
 const frontendUrl = "http://localhost:5173";
@@ -50,6 +51,19 @@ function sendConfigurationError(response: Response, error: unknown): void {
   response.status(500).json({ error: error instanceof Error ? error.message : "Configuration WordPress invalide." });
 }
 
+function extractImageUrls(content: string): string[] {
+  const urls = new Set<string>();
+  for (const match of content.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) urls.add(match[1]);
+  for (const match of content.matchAll(/!\[[^\]]*\]\(<?([^)>\s]+)>?(?:\s+["'][^"']*["'])?\)/g)) urls.add(match[1]);
+  return [...urls];
+}
+
+function replaceMediaUrls(content: string, replacements: Map<string, string>): string {
+  let result = content;
+  for (const [sourceUrl, wordpressUrl] of replacements) result = result.split(sourceUrl).join(wordpressUrl);
+  return result;
+}
+
 router.get("/connect", (request, response) => {
   try {
     const config = getWordPressConfig();
@@ -66,7 +80,7 @@ router.get("/connect", (request, response) => {
     authorizationUrl.searchParams.set("redirect_uri", config.redirectUri);
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("blog", config.siteId);
-    authorizationUrl.searchParams.set("scope", "posts");
+    authorizationUrl.searchParams.set("scope", "posts media");
     authorizationUrl.searchParams.set("state", state);
     return response.json({ url: authorizationUrl.toString() });
   } catch (error) {
@@ -165,7 +179,7 @@ router.post("/publish/:articleId", asyncRoute(async (request, response) => {
 
   const { data: article, error: articleError } = await supabase
     .from("articles")
-    .select("id,title,content,status")
+    .select("id,title,content,status,featured_image_url")
     .eq("id", articleId)
     .maybeSingle();
 
@@ -178,6 +192,56 @@ router.post("/publish/:articleId", asyncRoute(async (request, response) => {
     return response.status(400).json({ error: "L'article doit avoir un titre et un contenu avant publication." });
   }
 
+  const imageUrls = extractImageUrls(article.content);
+  const requestedMediaUrls = [...new Set([
+    ...imageUrls,
+    ...(typeof article.featured_image_url === "string" && article.featured_image_url.trim() ? [article.featured_image_url] : []),
+  ])];
+  const mediaByPublicUrl = new Map<string, Awaited<ReturnType<typeof syncMediaAssetToWordPress>>>();
+  let featuredImageId: number | null = null;
+
+  if (requestedMediaUrls.length) {
+    const { data: assets, error: mediaError } = await supabase.from("media_assets")
+      .select("id,filename,public_url,alt_text,wordpress_media_id,wordpress_url,wordpress_synced_at")
+      .in("public_url", requestedMediaUrls);
+    if (mediaError) {
+      console.error("Erreur Supabase lors de la récupération des médias de l'article.", { code: mediaError.code });
+      return response.status(500).json({ error: "Impossible de récupérer les images de l'article." });
+    }
+
+    const assetByUrl = new Map((assets ?? []).map((asset: {
+      id: string;
+      filename: string;
+      public_url: string;
+      alt_text: string | null;
+      wordpress_media_id: number | null;
+      wordpress_url: string | null;
+      wordpress_synced_at: string | null;
+    }) => [asset.public_url, asset]));
+    const urlsToSync = [...new Set([
+      ...imageUrls,
+      ...(typeof article.featured_image_url === "string" && article.featured_image_url.trim() ? [article.featured_image_url] : []),
+    ])];
+
+    try {
+      for (const publicUrl of urlsToSync) {
+        const asset = assetByUrl.get(publicUrl);
+        if (!asset) continue;
+        const synced = await syncMediaAssetToWordPress(asset);
+        mediaByPublicUrl.set(publicUrl, synced);
+        if (article.featured_image_url === publicUrl) featuredImageId = synced.wordpress_media_id;
+      }
+    } catch (syncError) {
+      if (syncError instanceof WordPressMediaError) return response.status(syncError.statusCode).json({ error: syncError.message });
+      console.error("Erreur lors de la synchronisation des images de l'article.", syncError instanceof Error ? syncError.message : "Erreur inconnue.");
+      return response.status(502).json({ error: "Impossible de synchroniser les images de l'article avec WordPress." });
+    }
+  }
+
+  const wordpressContent = replaceMediaUrls(article.content, new Map(
+    [...mediaByPublicUrl.entries()].flatMap(([sourceUrl, media]) => media.wordpress_url ? [[sourceUrl, media.wordpress_url] as const] : []),
+  ));
+
   let wordpressResponse: globalThis.Response;
   try {
     const postUrl = `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(config.siteId)}/posts/new`;
@@ -187,7 +251,12 @@ router.post("/publish/:articleId", asyncRoute(async (request, response) => {
         Authorization: `Bearer ${token.access_token}`,
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({ title: article.title, content: article.content, status: "publish" }),
+      body: new URLSearchParams({
+        title: article.title,
+        content: wordpressContent,
+        status: "publish",
+        ...(featuredImageId !== null ? { featured_image: String(featuredImageId) } : {}),
+      }),
       signal: AbortSignal.timeout(30_000),
     });
   } catch {

@@ -1367,8 +1367,37 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
   const [published, setPublished] = useState(false);
   const [article, setArticle] = useState<StoredArticle | null>(null);
   const [articleError, setArticleError] = useState<string | null>(null);
+  const [wordpressConnected, setWordpressConnected] = useState(false);
+  const [wordpressSiteUrl, setWordpressSiteUrl] = useState("https://anthonyfontaine.wordpress.com");
+  const [connectionLoading, setConnectionLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [wordpressError, setWordpressError] = useState<string | null>(null);
+  const [wordpressPostUrl, setWordpressPostUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    setConnectionLoading(true);
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("wordpress") === "error") setWordpressError("La connexion WordPress.com a échoué. Vous pouvez réessayer.");
+    void fetch("http://localhost:3001/api/wordpress/status", { signal: controller.signal })
+      .then(async response => {
+        const result = await response.json() as { connected?: boolean; siteUrl?: string; error?: string };
+        if (!response.ok) throw new Error(result.error || "Impossible de vérifier la connexion WordPress.");
+        setWordpressConnected(result.connected === true);
+        if (result.connected && result.siteUrl) setWordpressSiteUrl(result.siteUrl);
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setWordpressError(error instanceof Error ? error.message : "Impossible de vérifier la connexion WordPress.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setConnectionLoading(false); });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    setPublished(false);
+    setWordpressPostUrl(null);
     if (!articleId) { setArticle(null); setArticleError(null); return; }
     const controller = new AbortController();
     void fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, { signal: controller.signal })
@@ -1384,8 +1413,88 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
     return () => controller.abort();
   }, [articleId]);
 
+  const handleWordPressConnect = async () => {
+    setConnecting(true);
+    setWordpressError(null);
+    try {
+      const response = await fetch("http://localhost:3001/api/wordpress/connect", { credentials: "include" });
+      const result = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !result.url) throw new Error(result.error || "Impossible de démarrer la connexion WordPress.");
+      const authorizationUrl = new URL(result.url);
+      if (authorizationUrl.origin !== "https://public-api.wordpress.com" || authorizationUrl.pathname !== "/oauth2/authorize") {
+        throw new Error("L'URL d'autorisation WordPress reçue est invalide.");
+      }
+      window.location.assign(authorizationUrl.toString());
+    } catch (error) {
+      setWordpressError(error instanceof Error ? error.message : "Impossible de démarrer la connexion WordPress.");
+      setConnecting(false);
+    }
+  };
+
+  const handleWordPressPublish = async () => {
+    setWordpressError(null);
+    setWordpressPostUrl(null);
+    setPublished(false);
+    if (publishStatus === "scheduled") {
+      setWordpressError("La planification sera connectée ultérieurement.");
+      return;
+    }
+    if (!articleId) {
+      setWordpressError("Sélectionnez un article avant de le publier.");
+      return;
+    }
+    if (publishStatus === "draft") {
+      setPublishing(true);
+      try {
+        const response = await fetch(`http://localhost:3001/api/articles/${encodeURIComponent(articleId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "draft" }),
+        });
+        const result = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(result.error || "Impossible d'enregistrer le brouillon dans NexusSEO.");
+        setPublished(true);
+      } catch (error) {
+        setWordpressError(error instanceof Error ? error.message : "Impossible d'enregistrer le brouillon dans NexusSEO.");
+      } finally {
+        setPublishing(false);
+      }
+      return;
+    }
+    if (!wordpressConnected) {
+      setWordpressError("Connectez WordPress.com avant de publier.");
+      return;
+    }
+
+    setPublishing(true);
+    let receivedResponse = false;
+    try {
+      const response = await fetch(`http://localhost:3001/api/wordpress/publish/${encodeURIComponent(articleId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "publish" }),
+      });
+      receivedResponse = true;
+      const result = await response.json().catch(() => null) as { success?: boolean; wordpressUrl?: string | null; error?: string } | null;
+      if (!response.ok) {
+        throw new Error(result?.error || "La publication WordPress a échoué.");
+      }
+      if (result?.success !== true) {
+        throw new Error(result?.error || "La réponse du backend NexusSEO est invalide.");
+      }
+      setWordpressPostUrl(result.wordpressUrl || null);
+      setPublished(true);
+    } catch (error) {
+      setWordpressError(receivedResponse
+        ? error instanceof Error ? error.message : "La publication WordPress a échoué."
+        : "Impossible de joindre le backend NexusSEO.");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   const btnLabel = publishStatus === "immediate" ? "Publier sur WordPress" :
-    publishStatus === "scheduled" ? "Planifier la publication" : "Mettre à jour le brouillon";
+    publishStatus === "scheduled" ? "Planifier la publication" : "Enregistrer comme brouillon";
   const btnIcon = publishStatus === "immediate" ? Globe : publishStatus === "scheduled" ? Calendar : Clock;
   const BtnIcon = btnIcon;
 
@@ -1401,24 +1510,27 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
             </div>
             <h3 className="text-sm font-semibold text-white">Connexion WordPress</h3>
           </div>
-          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 mb-4 flex items-center gap-2">
-            <CheckCircle size={13} className="text-emerald-400" />
+          <div className={`p-3 rounded-xl border mb-4 flex items-center gap-2 ${wordpressConnected ? "bg-emerald-500/10 border-emerald-500/25" : "bg-slate-500/10 border-slate-500/25"}`}>
+            <CheckCircle size={13} className={wordpressConnected ? "text-emerald-400" : "text-slate-500"} />
             <div>
-              <p className="text-xs text-emerald-300 font-medium">Connecté</p>
-              <p className="text-[10px] text-slate-400 font-mono">lelocal.fr/wp-json/</p>
+              <p className={`text-xs font-medium ${wordpressConnected ? "text-emerald-300" : "text-slate-300"}`}>
+                {connectionLoading ? "Vérification..." : wordpressConnected ? "Connecté" : "Déconnecté"}
+              </p>
+              <p className="text-[10px] text-slate-400 font-mono">{wordpressSiteUrl}</p>
             </div>
           </div>
           <div className="space-y-3">
             <div>
               <label className="block text-xs text-slate-300 font-mono mb-1">URL du site</label>
-              <input defaultValue="https://lelocal.fr" className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none font-mono" />
+              <input value={wordpressSiteUrl} readOnly className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none font-mono" />
             </div>
             <div>
               <label className="block text-xs text-slate-300 font-mono mb-1">Auteur</label>
               <input defaultValue="Sarah Connor" className="w-full px-3 py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-white text-xs focus:outline-none" />
             </div>
-            <button className="w-full py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-slate-400 hover:text-white text-xs flex items-center justify-center gap-1.5 transition-all hover:border-purple-500/40">
-              <RefreshCw size={11} /> Tester la connexion
+            <button onClick={() => { void handleWordPressConnect(); }} disabled={connecting}
+              className="w-full py-2 rounded-xl bg-[#070d22] border border-purple-500/20 text-slate-400 hover:text-white text-xs flex items-center justify-center gap-1.5 transition-all hover:border-purple-500/40 disabled:opacity-60">
+              <RefreshCw size={11} className={connecting ? "animate-spin" : ""} /> {connecting ? "Connexion..." : wordpressConnected ? "Reconnecter WordPress" : "Connecter WordPress"}
             </button>
           </div>
         </GlassCard>
@@ -1501,14 +1613,16 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
             </div>
           </div>
 
+          {wordpressError && <p className="mb-3 text-sm text-rose-300" role="alert">{wordpressError}</p>}
+
           {!published ? (
-            <button onClick={() => setPublished(true)}
+            <button onClick={() => { void handleWordPressPublish(); }} disabled={publishing}
               className={`w-full py-3 rounded-xl text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-lg hover:scale-[1.02] transition-transform ${
                 publishStatus === "immediate" ? "bg-gradient-to-r from-purple-600 to-violet-600 shadow-purple-500/25" :
                 publishStatus === "scheduled" ? "bg-gradient-to-r from-cyan-600 to-blue-600 shadow-cyan-500/20" :
                 "bg-gradient-to-r from-slate-600 to-slate-700 shadow-slate-500/15"
-              }`}>
-              <BtnIcon size={15} /> {btnLabel}
+              } disabled:opacity-60`}>
+              {publishing ? <RefreshCw size={15} className="animate-spin" /> : <BtnIcon size={15} />} {publishing ? publishStatus === "draft" ? "Enregistrement..." : "Publication en cours..." : btnLabel}
             </button>
           ) : (
             <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center gap-3">
@@ -1516,11 +1630,13 @@ function WordPressScreen({ articleId }: { articleId: string | null }) {
               <div>
                 <p className="text-sm font-medium text-emerald-300">
                   {publishStatus === "immediate" ? "Article publié avec succès" :
-                   publishStatus === "scheduled" ? "Article planifié pour publication" : "Brouillon mis à jour"}
+                   publishStatus === "scheduled" ? "Article planifié pour publication" : "Article enregistré comme brouillon dans NexusSEO."}
                 </p>
                 <p className="text-xs text-slate-400 font-mono mt-0.5">
-                  {publishStatus === "scheduled" ? "5 juin 2025 à 10h00 · " : ""}lelocal.fr
+                  {publishStatus === "immediate" ? wordpressSiteUrl.replace(/^https?:\/\//, "") :
+                   publishStatus === "scheduled" ? "Planification non connectée" : "Statut enregistré dans NexusSEO"}
                 </p>
+                {wordpressPostUrl && <a href={wordpressPostUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-cyan-300 hover:text-cyan-200 underline">Ouvrir l'article WordPress</a>}
               </div>
               <button onClick={() => setPublished(false)} className="ml-auto text-slate-500 hover:text-slate-300"><X size={14} /></button>
             </div>
